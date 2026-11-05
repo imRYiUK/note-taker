@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PROTOCOL_VERSION, parseClientMsg } from "../src/shared/protocol.ts";
+import { LIMITS, PROTOCOL_VERSION, parseClientMsg } from "../src/shared/protocol.ts";
 
 const j = (v: unknown) => JSON.stringify(v);
 
@@ -36,5 +36,37 @@ describe("parseClientMsg", () => {
 
   test("accepts Buffer input", () => {
     expect(parseClientMsg(Buffer.from(j({ type: "ping", t: 0 })))).toEqual({ type: "ping", t: 0 });
+  });
+
+  test("stroke messages", () => {
+    const begin = { type: "stroke.begin", id: "s1", pageId: "page-1", tool: "pen", color: "#1d1f2b", width: 10 };
+    expect(parseClientMsg(j(begin))).toEqual(begin as never);
+    expect(parseClientMsg(j({ ...begin, color: "red" }))).toBeNull();
+    expect(parseClientMsg(j({ ...begin, tool: "laser" }))).toBeNull();
+    expect(parseClientMsg(j({ ...begin, width: 0 }))).toBeNull();
+    expect(parseClientMsg(j({ ...begin, id: "" }))).toBeNull();
+
+    expect(parseClientMsg(j({ type: "stroke.points", id: "s1", pts: [1, 2, 0.3, 4] }))).toEqual({
+      type: "stroke.points",
+      id: "s1",
+      pts: [1, 2, 0.3, 4],
+    });
+    expect(parseClientMsg(j({ type: "stroke.points", id: "s1", pts: [1, 2, 0.3] }))).toBeNull(); // not a multiple of 4
+    expect(parseClientMsg(j({ type: "stroke.points", id: "s1", pts: [1, 2, "x", 4] }))).toBeNull();
+    expect(parseClientMsg(j({ type: "stroke.points", id: "s1", pts: new Array(LIMITS.pointsPerMessage * 4 + 4).fill(0) }))).toBeNull();
+
+    expect(parseClientMsg(j({ type: "stroke.end", id: "s1", n: 12 }))).toEqual({ type: "stroke.end", id: "s1", n: 12 });
+    expect(parseClientMsg(j({ type: "stroke.end", id: "s1", n: 1.5 }))).toBeNull();
+    expect(parseClientMsg(j({ type: "stroke.cancel", id: "s1" }))).toEqual({ type: "stroke.cancel", id: "s1" });
+    expect(parseClientMsg(j({ type: "page.clear", pageId: "page-1" }))).toEqual({ type: "page.clear", pageId: "page-1" });
+  });
+
+  test("settings.set is partial and clamped", () => {
+    expect(parseClientMsg(j({ type: "settings.set", ink: { pressureMax: 9 } }))).toEqual({
+      type: "settings.set",
+      ink: { pressureMax: 1 },
+    });
+    expect(parseClientMsg(j({ type: "settings.set", ink: { pressureGamma: "x" } }))).toBeNull();
+    expect(parseClientMsg(j({ type: "settings.set" }))).toBeNull();
   });
 });

@@ -45,10 +45,17 @@ export function resolveToken(): string | null {
   return storageGet("note-taker.token");
 }
 
+/** Random id. `crypto.randomUUID` only exists in secure contexts (not plain-http Wi-Fi). */
+export function uid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
 export function deviceId(): string {
   let id = storageGet("note-taker.deviceId");
   if (!id) {
-    id = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2);
+    id = uid();
     storageSet("note-taker.deviceId", id);
   }
   return id;

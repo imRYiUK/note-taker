@@ -1,5 +1,7 @@
 import { Connection, type ConnStatus } from "../shared/connection.ts";
+import { DEFAULT_INK, applyPressureCurve, type InkSettings } from "../shared/ink.ts";
 import type { AdbDevice, ClientInfo, PadUrls, ServerMsg } from "../shared/protocol.ts";
+import { PageView, type FitMode } from "./renderer.ts";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -17,6 +19,7 @@ function h<K extends keyof HTMLElementTagNameMap>(
 }
 
 let myId: string | null = null;
+const view = new PageView($("#stage"));
 
 // ------------------------------------------------------------------ connection
 
@@ -46,6 +49,29 @@ function handle(msg: ServerMsg) {
       break;
     case "clients":
       renderClients(msg.clients);
+      renderPadStatus(msg.clients);
+      break;
+    case "snapshot":
+      view.setSnapshot(msg.page, msg.strokes);
+      renderObserved();
+      break;
+    case "stroke.begin":
+      view.liveBegin(msg);
+      break;
+    case "stroke.points":
+      view.livePoints(msg.id, msg.pts);
+      break;
+    case "stroke.cancel":
+      view.liveCancel(msg.id);
+      break;
+    case "stroke.added":
+      view.addStroke(msg.stroke);
+      renderObserved();
+      break;
+    case "settings":
+      ink = msg.ink;
+      view.setInk(ink);
+      renderInk();
       break;
     case "devices":
       renderDevices(msg.devices, msg.adbAvailable);
@@ -58,6 +84,207 @@ function handle(msg: ServerMsg) {
       break;
   }
 }
+
+// ------------------------------------------------------------------ header controls
+
+function storageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function storageSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // not remembered — fine
+  }
+}
+
+const fitBtn = $<HTMLButtonElement>("#fit");
+function setFit(fit: FitMode) {
+  view.setFit(fit);
+  fitBtn.textContent = fit === "width" ? "Fit: width" : "Fit: page";
+  storageSet("note-taker.viewer.fit", fit);
+}
+setFit(storageGet("note-taker.viewer.fit") === "page" ? "page" : "width");
+fitBtn.addEventListener("click", () => setFit(view.fit === "width" ? "page" : "width"));
+
+const followBtn = $<HTMLButtonElement>("#follow");
+followBtn.addEventListener("click", () => {
+  view.follow = !view.follow;
+  followBtn.setAttribute("aria-pressed", String(view.follow));
+});
+
+// Two clicks to clear: no undo until M2.
+const clearBtn = $<HTMLButtonElement>("#clear");
+let clearArmed: ReturnType<typeof setTimeout> | null = null;
+clearBtn.addEventListener("click", () => {
+  if (clearArmed) {
+    clearTimeout(clearArmed);
+    clearArmed = null;
+    clearBtn.classList.remove("danger");
+    clearBtn.textContent = "Clear page";
+    if (view.page) conn.send({ type: "page.clear", pageId: view.page.id });
+    return;
+  }
+  if (!view.strokeCount) return;
+  clearBtn.classList.add("danger");
+  clearBtn.textContent = "Click again to clear";
+  clearArmed = setTimeout(() => {
+    clearArmed = null;
+    clearBtn.classList.remove("danger");
+    clearBtn.textContent = "Clear page";
+  }, 3000);
+});
+
+const panel = $("#panel");
+const panelBtn = $<HTMLButtonElement>("#panel-toggle");
+let panelTouched = false;
+function setPanel(open: boolean) {
+  panel.hidden = !open;
+  panelBtn.setAttribute("aria-pressed", String(open));
+}
+panelBtn.addEventListener("click", () => {
+  panelTouched = true;
+  setPanel(Boolean(panel.hidden));
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.target instanceof HTMLInputElement || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "f" || e.key === "F") setFit(view.fit === "width" ? "page" : "width");
+});
+
+function renderPadStatus(clients: ClientInfo[]) {
+  const pads = clients.filter((c) => c.role === "pad");
+  const el = $("#pad-status");
+  if (!pads.length) {
+    el.replaceChildren(h("span", { class: "dot bad" }), h("span", {}, "no pad"));
+    return;
+  }
+  const p = pads[0]!;
+  const rtt = p.rtt === null ? "" : ` · ${p.rtt.toFixed(1)} ms`;
+  el.replaceChildren(
+    h("span", { class: "dot ok" }),
+    h("span", {}, `pad ${p.transport.toUpperCase()}${rtt}${pads.length > 1 ? ` (+${pads.length - 1})` : ""}`),
+  );
+  // First pad connection: get the setup panel out of the way, unless the user chose.
+  if (!panelTouched && !panel.hidden) {
+    panelTouched = true;
+    setPanel(false);
+  }
+}
+
+// ------------------------------------------------------------------ ink settings
+
+let ink: InkSettings = { ...DEFAULT_INK };
+const pmax = $<HTMLInputElement>("#pmax");
+const gamma = $<HTMLInputElement>("#gamma");
+let dragging = false;
+let pendingInk: Partial<InkSettings> | null = null;
+
+for (const input of [pmax, gamma]) {
+  input.addEventListener("pointerdown", () => (dragging = true));
+  input.addEventListener("pointerup", () => (dragging = false));
+  input.addEventListener("change", () => (dragging = false));
+  input.addEventListener("input", () => {
+    ink = { pressureMax: Number(pmax.value), pressureGamma: Number(gamma.value) };
+    renderInk();
+    // At most one update per frame while dragging.
+    if (!pendingInk) {
+      requestAnimationFrame(() => {
+        if (pendingInk) conn.send({ type: "settings.set", ink: pendingInk });
+        pendingInk = null;
+      });
+    }
+    pendingInk = { ...ink };
+  });
+}
+
+function renderInk() {
+  if (!dragging) {
+    pmax.value = String(ink.pressureMax);
+    gamma.value = String(ink.pressureGamma);
+  }
+  $("#pmax-out").textContent = ink.pressureMax.toFixed(2);
+  $("#gamma-out").textContent = ink.pressureGamma.toFixed(2);
+  drawCurve();
+}
+
+function observedMax(): number | null {
+  const r = view.recentPressure;
+  if (r.length < 3) return null;
+  // 90th percentile of per-stroke maxima: firm-but-normal writing, ignoring outliers.
+  const sorted = [...r].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))]!;
+}
+
+function renderObserved() {
+  const obs = observedMax();
+  const btn = $<HTMLButtonElement>("#use-observed");
+  btn.disabled = obs === null;
+  $("#observed").textContent =
+    obs === null
+      ? "Write a few strokes to measure your pressure."
+      : `Your firm strokes reach ${obs.toFixed(2)} (last ${view.recentPressure.length} strokes).`;
+  drawCurve();
+}
+
+$("#use-observed").addEventListener("click", () => {
+  const obs = observedMax();
+  if (obs === null) return;
+  // A little headroom so ordinary strokes aren't all at full width.
+  const pressureMax = Math.round(Math.min(1, Math.max(0.1, obs * 1.15)) * 100) / 100;
+  conn.send({ type: "settings.set", ink: { pressureMax } });
+});
+
+function drawCurve() {
+  const c = $<HTMLCanvasElement>("#curve");
+  const dpr = devicePixelRatio || 1;
+  const w = c.clientWidth;
+  const hgt = c.clientHeight;
+  if (!w || !hgt) return;
+  c.width = Math.round(w * dpr);
+  c.height = Math.round(hgt * dpr);
+  const g = c.getContext("2d")!;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = getComputedStyle(document.documentElement);
+  const color = (v: string) => css.getPropertyValue(v).trim();
+  const pad = 6;
+  const X = (p: number) => pad + p * (w - 2 * pad);
+  const Y = (f: number) => hgt - pad - f * (hgt - 2 * pad);
+
+  g.strokeStyle = color("--border");
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(X(0), Y(0));
+  g.lineTo(X(1), Y(1));
+  g.stroke();
+
+  const obs = observedMax();
+  if (obs !== null) {
+    g.strokeStyle = color("--warn");
+    g.setLineDash([3, 3]);
+    g.beginPath();
+    g.moveTo(X(obs), Y(0));
+    g.lineTo(X(obs), Y(1));
+    g.stroke();
+    g.setLineDash([]);
+  }
+
+  g.strokeStyle = color("--accent");
+  g.lineWidth = 2;
+  g.beginPath();
+  for (let i = 0; i <= 100; i++) {
+    const p = i / 100;
+    const f = applyPressureCurve(p, ink);
+    if (i === 0) g.moveTo(X(p), Y(f));
+    else g.lineTo(X(p), Y(f));
+  }
+  g.stroke();
+}
+renderInk();
 
 // ------------------------------------------------------------------ rendering
 

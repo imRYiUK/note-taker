@@ -331,14 +331,19 @@ Each milestone ends with a working, usable state. Estimates assume part-time wor
 - **Done when:** phone over USB shows "connected" and the viewer lists it.
 
 ### M1 — Live ink MVP (1–2 days)
-- [ ] Pad: pen-only input, coalesced samples, pressure, desynchronized canvas.
-- [ ] Shared `ink.ts` (perfect-freehand) used by both clients.
-- [ ] Protocol: `stroke.begin/points/end`, batched per frame.
-- [ ] Viewer: single A4 page, live layer + committed cache, fit-to-width.
-- [ ] Pad uses **tablet mapping** of the whole page (simplest mapping) for now.
-- [ ] **Pressure curve** (see §15): normalize raw pressure (`p / pMax`, default `pMax = 0.45`,
-      clamp, gamma ≈ 0.8), adjustable in settings; store *raw* pressure, apply curve at render.
-- [ ] Touch ignored for ink (palm rejection).
+- [x] Pad: pen-only input, coalesced samples, pressure, desynchronized canvas, predicted tail.
+- [x] Shared `ink.ts` (perfect-freehand) used by both clients.
+- [x] Protocol: `stroke.begin/points/end/cancel`, batched per frame; `snapshot`, `stroke.added`,
+      `page.clear`, `settings`. Stroke begun on an older connection is re-sent on reconnect.
+- [x] Viewer: single A4 page, live layer + committed cache, fit-to-width (`F` toggles fit-page),
+      follow-pen scroll; M0 dashboard moved to a side panel.
+- [x] Pad uses **tablet mapping** of the whole page (simplest mapping) for now — hold the phone
+      in portrait for the biggest page.
+- [x] **Pressure curve** (see §15): normalize raw pressure (`p / pMax`, default `pMax = 0.45`,
+      clamp, gamma ≈ 0.8), adjustable in the viewer's Ink panel (with a "use my measured
+      pressure" button), persisted in config.json; *raw* pressure stored, curve applied at render.
+- [x] Touch ignored for ink (palm rejection).
+- [x] **On device:** strokes from the S23 over USB appear live on the PC (2026-11-05).
 - **Done when:** writing on the phone appears on the PC in real time, pressure visible,
   palm doesn't draw.
 

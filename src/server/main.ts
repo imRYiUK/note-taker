@@ -4,7 +4,8 @@ import padPage from "../pad/index.html";
 import viewerPage from "../viewer/index.html";
 import probePage from "../probe/index.html";
 import { WS_PATH } from "../shared/protocol.ts";
-import { loadConfig, dataDir as defaultDataDir } from "./config.ts";
+import { DEFAULT_INK, type InkSettings } from "../shared/ink.ts";
+import { loadConfig, saveInkSettings, dataDir as defaultDataDir } from "./config.ts";
 import { AdbWatcher } from "./adb.ts";
 import { Hub, type WsData } from "./hub.ts";
 import { authorize, isLoopback, padUrls } from "./net.ts";
@@ -20,6 +21,8 @@ export interface ServerOptions {
   adb?: boolean;
   log?: (msg: string) => void;
   helloTimeoutMs?: number;
+  ink?: InkSettings;
+  onInkChange?: (ink: InkSettings) => void;
 }
 
 export function startServer(opts: ServerOptions) {
@@ -40,6 +43,8 @@ export function startServer(opts: ServerOptions) {
     adb,
     log,
     helloTimeoutMs: opts.helloTimeoutMs,
+    ink: opts.ink ?? { ...DEFAULT_INK },
+    onInkChange: opts.onInkChange,
   });
 
   const json = (body: unknown, status = 200) => Response.json(body, { status });
@@ -150,6 +155,14 @@ Env: NOTE_TAKER_PORT, NOTE_TAKER_CONFIG_DIR, NOTE_TAKER_DATA_DIR, NOTE_TAKER_DEV
   }
 
   const cfg = await loadConfig();
+  // Slider drags send many updates — write the config once they settle.
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  const persistInk = (ink: InkSettings) => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveInkSettings(ink).catch((e) => console.error(`[note-taker] could not save settings: ${(e as Error).message}`));
+    }, 500);
+  };
   let app: ReturnType<typeof startServer>;
   try {
     app = startServer({
@@ -157,6 +170,8 @@ Env: NOTE_TAKER_PORT, NOTE_TAKER_CONFIG_DIR, NOTE_TAKER_DATA_DIR, NOTE_TAKER_DEV
       token: cfg.token,
       hostname: args.has("--usb-only") ? "127.0.0.1" : "0.0.0.0",
       adb: !args.has("--no-adb"),
+      ink: cfg.ink,
+      onInkChange: persistInk,
     });
   } catch (e) {
     console.error(`[note-taker] could not start on port ${cfg.port}: ${(e as Error).message}`);

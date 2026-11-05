@@ -2,12 +2,17 @@
 
 Write with the S Pen on your phone, see it live on your PC. See [PLAN.md](PLAN.md).
 
-## Status: M0 — skeleton
+## Status: M1 — live ink
 
-- Bun server serving the **pad** (phone), **viewer** (PC) and **probe** (S Pen capability test) pages
-- WebSocket handshake, auto-reconnect, round-trip latency
-- USB: automatic `adb reverse`, "Open pad / Open probe" on the phone straight from the viewer
-- Wi-Fi: token-protected URL (USB/loopback is trusted and needs no token)
+- Write on the phone (**pad**), ink appears live on the PC (**viewer**) — single A4 page, whole
+  page mapped onto the phone screen (portrait gives the biggest page)
+- Pressure-sensitive ink (perfect-freehand); pressure curve tunable in the viewer's **Panel → Ink**
+- Only the S Pen draws (mouse too, for desktop testing); fingers/palm never do
+- Viewer: fit width / fit page (`F`), follow pen, clear page
+- Strokes live in server memory only — persistence arrives in M2
+
+From M0: USB with automatic `adb reverse`, "Open pad / Open probe" from the viewer,
+token-protected Wi-Fi URL, auto-reconnect, round-trip latency.
 
 ## Run
 
@@ -21,7 +26,7 @@ bun run dev                   # server with auto-restart + browser console in th
 Flags (server): `--usb-only` (listen on 127.0.0.1 only), `--no-adb`.
 Env: `NOTE_TAKER_PORT`, `NOTE_TAKER_CONFIG_DIR`, `NOTE_TAKER_DATA_DIR`.
 
-- Config (port, LAN token): `~/.config/note-taker/config.json`
+- Config (port, LAN token, ink pressure curve): `~/.config/note-taker/config.json`
 - Data (probe reports, later notebooks): `~/.local/share/note-taker/`
 
 ## Phone setup (once)

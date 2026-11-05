@@ -15,69 +15,56 @@
         user-select: none;
         -webkit-user-select: none;
         -webkit-touch-callout: none;
+        touch-action: none;
+        background: #121214;
       }
-      #surface {
+      #ink {
         position: fixed;
         inset: 0;
         touch-action: none;
-        display: grid;
-        place-items: center;
-        padding: 16px;
+        display: block;
       }
-      .card {
-        text-align: center;
-        display: grid;
-        gap: 14px;
-        justify-items: center;
-        max-width: 520px;
-      }
+      /* Status sits over the canvas but never blocks the pen. */
       #status {
-        font-size: 22px;
-        font-weight: 600;
+        position: fixed;
+        top: max(6px, env(safe-area-inset-top));
+        right: max(6px, env(safe-area-inset-right));
         display: flex;
         align-items: center;
-        gap: 10px;
-      }
-      #status .dot {
-        width: 12px;
-        height: 12px;
-      }
-      #detail {
-        color: var(--muted);
-        font-size: 15px;
-        min-height: 1.4em;
-      }
-      .actions {
-        display: flex;
-        gap: 10px;
+        gap: 6px;
+        padding: 3px 9px;
+        border-radius: 99px;
+        background: rgba(28, 28, 31, 0.72);
+        color: #ececef;
+        font-size: 11px;
+        pointer-events: none;
+        opacity: 0.75;
+        max-width: calc(100vw - 12px);
         flex-wrap: wrap;
-        justify-content: center;
       }
-      #meta {
-        color: var(--muted);
-        font-size: 12px;
-      }
-      #hint {
-        color: var(--muted);
+      #status.alert {
+        opacity: 1;
         font-size: 13px;
-        max-width: 420px;
-        line-height: 1.45;
+        padding: 6px 12px;
+      }
+      #status-detail {
+        color: #9a9aa2;
+        font-family: var(--mono);
+      }
+      #fullscreen {
+        position: fixed;
+        bottom: max(8px, env(safe-area-inset-bottom));
+        right: max(8px, env(safe-area-inset-right));
+        padding: 6px 10px;
+        font-size: 12px;
+        opacity: 0.8;
       }
     </style>
   </head>
   <body>
-    <main id="surface">
-      <div class="card">
-        <div id="status"><span class="dot"></span><span id="status-text">Connecting…</span></div>
-        <div id="detail"></div>
-        <div class="actions">
-          <button id="fullscreen" type="button">Fullscreen</button>
-          <a class="button" id="probe-link" href="/probe">S Pen probe</a>
-        </div>
-        <p id="hint">Writing arrives in the next milestone. For now this confirms the phone ↔ PC link.</p>
-        <div id="meta" class="mono"></div>
-      </div>
-    </main>
+    <canvas id="ink"></canvas>
+    <div id="status"><span class="dot warn"></span><span id="status-text">Connecting…</span><span id="status-detail"></span></div>
+    <button id="fullscreen" type="button">Fullscreen</button>
     <script type="module" src="./pad.ts"></script>
   </body>
 </html>

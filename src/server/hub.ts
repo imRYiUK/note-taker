@@ -9,8 +9,10 @@ import {
   type PadUrls,
   type ServerMsg,
 } from "../shared/protocol.ts";
+import type { InkSettings } from "../shared/ink.ts";
 import { authorize } from "./net.ts";
 import type { AdbWatcher } from "./adb.ts";
+import { Notebook } from "./notebook.ts";
 
 export interface WsData {
   id: string;
@@ -32,14 +34,22 @@ export interface HubOptions {
   log: (msg: string) => void;
   helloTimeoutMs?: number;
   pingIntervalMs?: number;
+  notebook?: Notebook;
+  ink: InkSettings;
+  /** Called after ink settings change (to persist them). */
+  onInkChange?: (ink: InkSettings) => void;
 }
 
 /** Connection registry and message router. */
 export class Hub {
   private readonly sockets = new Set<Ws>();
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  readonly notebook: Notebook;
+  ink: InkSettings;
 
   constructor(private readonly opts: HubOptions) {
+    this.notebook = opts.notebook ?? new Notebook();
+    this.ink = opts.ink;
     this.pingTimer = setInterval(() => this.pingAll(), opts.pingIntervalMs ?? 2000);
   }
 
@@ -61,6 +71,7 @@ export class Hub {
     this.sockets.delete(ws);
     if (ws.data.helloTimer) clearTimeout(ws.data.helloTimer);
     if (ws.data.info) {
+      for (const id of this.notebook.dropLive(ws.data.id)) this.toViewers({ type: "stroke.cancel", id });
       this.opts.log(`${ws.data.info.role} disconnected (${ws.data.info.transport}, ${ws.data.ip})`);
       this.broadcastClients();
     }
@@ -87,6 +98,65 @@ export class Hub {
         break;
       case "adb.open":
         void this.adbOpen(ws, msg);
+        break;
+      case "stroke.begin":
+      case "stroke.points":
+      case "stroke.end":
+      case "stroke.cancel":
+        if (ws.data.info.role !== "pad") {
+          this.send(ws, { type: "error", code: "forbidden", message: "only pads draw" });
+          break;
+        }
+        this.stroke(ws, msg);
+        break;
+      case "page.clear":
+        if (this.notebook.clear(msg.pageId)) {
+          this.opts.log("page cleared");
+          this.broadcast({ type: "snapshot", ...this.notebook.snapshot() });
+        } else {
+          this.send(ws, { type: "error", code: "unknown_page", message: `no page ${msg.pageId}` });
+        }
+        break;
+      case "settings.set":
+        this.ink = { ...this.ink, ...msg.ink };
+        this.broadcast({ type: "settings", ink: this.ink });
+        this.opts.onInkChange?.(this.ink);
+        break;
+    }
+  }
+
+  private stroke(
+    ws: Ws,
+    msg: Extract<ClientMsg, { type: "stroke.begin" | "stroke.points" | "stroke.end" | "stroke.cancel" }>,
+  ): void {
+    const nb = this.notebook;
+    const owner = ws.data.id;
+    switch (msg.type) {
+      case "stroke.begin": {
+        const res = nb.begin(owner, msg);
+        if (res === "ok") this.toViewers(msg);
+        else if (res === "unknown_page") {
+          this.send(ws, { type: "error", code: "unknown_page", message: `no page ${msg.pageId}` });
+          // The pad is out of date (e.g. server restarted) — give it the current page.
+          this.send(ws, { type: "snapshot", ...nb.snapshot() });
+        }
+        break;
+      }
+      case "stroke.points":
+        if (nb.points(owner, msg.id, msg.pts)) this.toViewers(msg);
+        break;
+      case "stroke.end": {
+        const res = nb.end(owner, msg.id, msg.n);
+        if (!res) {
+          this.toViewers({ type: "stroke.cancel", id: msg.id });
+          break;
+        }
+        if (res.missing !== 0) this.opts.log(`stroke ${msg.id}: ${res.missing} point(s) missing`);
+        this.broadcast({ type: "stroke.added", stroke: res.stroke }, ws);
+        break;
+      }
+      case "stroke.cancel":
+        if (nb.cancel(owner, msg.id)) this.toViewers(msg);
         break;
     }
   }
@@ -129,6 +199,8 @@ export class Hub {
       serverTime: Date.now(),
       padUrls: this.opts.padUrls(),
     });
+    this.send(ws, { type: "settings", ink: this.ink });
+    this.send(ws, { type: "snapshot", ...this.notebook.snapshot() });
     if (msg.role === "viewer") {
       this.sendDevices(ws);
     }
@@ -156,6 +228,12 @@ export class Hub {
 
   broadcastDevices(): void {
     for (const ws of this.viewers()) this.sendDevices(ws);
+  }
+
+  /** Send to every client that completed the handshake, optionally skipping one. */
+  broadcast(msg: ServerMsg, except?: Ws): void {
+    const data = encode(msg);
+    for (const ws of this.sockets) if (ws.data.info && ws !== except) ws.send(data);
   }
 
   toViewers(msg: ServerMsg): void {
