@@ -14,8 +14,8 @@ import {
   type InkSettings,
   type Rect,
 } from "../shared/ink.ts";
-import type { PageInfo, StrokeBeginMsg, StrokeData } from "../shared/protocol.ts";
-import { drawRuling } from "../shared/templates.ts";
+import type { PageInfo, StrokeBeginMsg, StrokeData, Template } from "../shared/protocol.ts";
+import { drawTemplate } from "../shared/templates.ts";
 
 export type FitMode = "width" | "page";
 
@@ -37,6 +37,7 @@ export class PageView {
   private readonly lctx = this.liveCanvas.getContext("2d")!;
 
   page: PageInfo | null = null;
+  template: Template = "lined";
   fit: FitMode = "width";
   follow = true;
   private ink: InkSettings = DEFAULT_INK;
@@ -66,9 +67,11 @@ export class PageView {
 
   // ------------------------------------------------------------ state
 
-  setSnapshot(page: PageInfo, strokes: StrokeData[]): void {
+  setSnapshot(page: PageInfo, strokes: StrokeData[], template: Template): void {
     const sizeChanged = page.width !== this.page?.width || page.height !== this.page?.height;
     this.page = page;
+    this.template = template;
+    this.live.clear();
     this.strokes.clear();
     this.paths.clear();
     for (const s of strokes) this.strokes.set(s.id, s);
@@ -78,8 +81,20 @@ export class PageView {
     else this.redrawBase();
   }
 
+  /** Same page, new size (an infinite page grew) or new template. */
+  updatePage(page: PageInfo, template: Template): void {
+    if (page.id !== this.page?.id) return;
+    const sizeChanged = page.width !== this.page.width || page.height !== this.page.height;
+    const templateChanged = template !== this.template;
+    this.page = page;
+    this.template = template;
+    if (sizeChanged) this.layout();
+    else if (templateChanged) this.redrawBase();
+  }
+
   addStroke(s: StrokeData): void {
     this.live.delete(s.id);
+    if (s.pageId !== this.page?.id) return this.scheduleLive();
     this.strokes.set(s.id, s);
     this.paintStroke(s);
     this.notePressure(s.pts);
@@ -142,6 +157,7 @@ export class PageView {
   // ------------------------------------------------------------ live strokes
 
   liveBegin(m: StrokeBeginMsg): void {
+    if (m.pageId !== this.page?.id) return; // still writing on a page we've left
     this.live.set(m.id, { id: m.id, color: m.color, width: m.width, pts: [] });
   }
 
@@ -215,10 +231,10 @@ export class PageView {
     const availH = Math.max(100, this.stage.clientHeight - 2 * STAGE_PAD);
     const byWidth = availW / this.page.width;
     this.scale = this.fit === "width" ? byWidth : Math.min(byWidth, availH / this.page.height);
-    this.dpr = devicePixelRatio || 1;
-
     const cssW = Math.round(this.page.width * this.scale);
     const cssH = Math.round(this.page.height * this.scale);
+    // Long (infinite) pages: stay within the browser's canvas limits (32767 px a side, ~268 MP).
+    this.dpr = Math.min(devicePixelRatio || 1, 32000 / cssH, Math.sqrt(120e6 / (cssW * cssH)));
     this.wrap.style.width = `${cssW}px`;
     this.wrap.style.height = `${cssH}px`;
     for (const c of [this.base, this.liveCanvas]) {
@@ -239,7 +255,7 @@ export class PageView {
     c.fillRect(0, 0, this.base.width, this.base.height);
     const k = this.scale * this.dpr;
     c.setTransform(k, 0, 0, k, 0, 0);
-    drawRuling(c, this.page, k);
+    drawTemplate(c, this.template, this.page, k);
     for (const s of this.strokes.values()) this.paintStroke(s);
   }
 

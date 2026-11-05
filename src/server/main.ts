@@ -9,7 +9,8 @@ import { DEFAULT_INK, type InkSettings } from "../shared/ink.ts";
 import { loadConfig, saveInkSettings, dataDir as defaultDataDir } from "./config.ts";
 import { AdbWatcher } from "./adb.ts";
 import { Hub, type WsData } from "./hub.ts";
-import { Notebook } from "./notebook.ts";
+import { Library } from "./notebook.ts";
+import { pageSvg } from "./export.ts";
 import { Store } from "./store.ts";
 import { authorize, isLoopback, padUrls } from "./net.ts";
 
@@ -37,8 +38,8 @@ export function startServer(opts: ServerOptions) {
   mkdirSync(dir, { recursive: true });
   const dbFile = join(dir, "notes.db");
   const store = new Store(dbFile);
-  const notebook = new Notebook(store);
-  log(`notes: ${dbFile} (${notebook.strokeCount} strokes on the current page)`);
+  const library = new Library(store);
+  log(`notes: ${dbFile} (“${library.notebook.title}”, page ${library.pages.findIndex((p) => p.id === library.page.id) + 1}/${library.pages.length})`);
 
   // Filled in once the server is listening (port may be 0 → random).
   let hub!: Hub;
@@ -52,7 +53,7 @@ export function startServer(opts: ServerOptions) {
     adb,
     log,
     helloTimeoutMs: opts.helloTimeoutMs,
-    notebook,
+    library,
     ink: opts.ink ?? { ...DEFAULT_INK },
     onInkChange: opts.onInkChange,
   });
@@ -104,6 +105,24 @@ export function startServer(opts: ServerOptions) {
           const file = join(probesDir, last);
           return json({ file, report: JSON.parse(await readFile(file, "utf8")) });
         },
+      },
+
+      // A page as SVG (`?thumb=1`: coarser, for the viewer's thumbnails).
+      "/api/export/:file": (req, srv) => {
+        const url = new URL(req.url);
+        if (!authorize(isLoopback(srv.requestIP(req)?.address), url.searchParams.get("token"), opts.token)) {
+          return json({ error: "bad token" }, 401);
+        }
+        const m = /^(.+)\.svg$/.exec(req.params.file);
+        const page = m ? store.page(m[1]!) : null;
+        if (!page) return json({ error: "no such page" }, 404);
+        const nb = store.notebook(page.notebookId)!;
+        const svg = pageSvg(page, nb.template, library.pageStrokes(page.id), hub.ink, {
+          thumb: url.searchParams.has("thumb"),
+        });
+        return new Response(svg, {
+          headers: { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "no-cache" },
+        });
       },
 
       [WS_PATH]: (req, srv) => {

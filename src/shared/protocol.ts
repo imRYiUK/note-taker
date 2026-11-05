@@ -2,10 +2,12 @@
 // JSON over WebSocket. See PLAN.md §4. M0: handshake, liveness, device
 // management. M1: live strokes, page snapshot, ink settings. M2: stroke acks
 // (pad outbox), erase, undo/redo. M3: viewport (zoom-strip position).
+// M4: notebooks, pages, templates.
 
 import { POINT_STRIDE, parseInkPatch, type InkSettings, type Rect } from "./ink.ts";
 
-export const PROTOCOL_VERSION = 4; // 2: M1 strokes, snapshot, settings · 3: M2 acks, erase, undo · 4: M3 viewport
+// 2: M1 strokes, snapshot, settings · 3: M2 acks, erase, undo · 4: M3 viewport · 5: M4 notebooks & pages
+export const PROTOCOL_VERSION = 5;
 export const DEFAULT_PORT = 7777;
 export const WS_PATH = "/ws";
 
@@ -38,10 +40,30 @@ export interface PadUrls {
 
 export type Tool = "pen" | "highlighter";
 
+/** Page background, chosen per notebook. */
+export type Template = "blank" | "lined" | "grid" | "dotted";
+export const TEMPLATES: readonly Template[] = ["lined", "grid", "dotted", "blank"];
+
+/** `a4`: fixed size. `infinite`: A4 width, grows downwards as you write. */
+export type PageKind = "a4" | "infinite";
+export const PAGE_KINDS: readonly PageKind[] = ["a4", "infinite"];
+
 export interface PageInfo {
   id: string;
+  notebookId: string;
+  kind: PageKind;
   width: number;
   height: number;
+}
+
+export interface NotebookInfo {
+  id: string;
+  title: string;
+  template: Template;
+  createdAt: number;
+  updatedAt: number;
+  /** Number of pages. */
+  pages: number;
 }
 
 /** A finished stroke. `pts` is flat `[x, y, rawPressure, t, ...]` in page units / ms since start. */
@@ -60,6 +82,8 @@ export const LIMITS = {
   pointsPerMessage: 4096,
   pointsPerStroke: 100_000,
   idsPerMessage: 5000,
+  titleLength: 120,
+  pagesPerNotebook: 2000,
 } as const;
 
 /**
@@ -100,7 +124,16 @@ export type ClientMsg =
   /** Erase every stroke on the page (one undo step). */
   | { type: "page.clear"; pageId: string }
   | { type: "settings.set"; ink: Partial<InkSettings> }
-  | ({ type: "viewport" } & Viewport);
+  | ({ type: "viewport" } & Viewport)
+  /** Make a page the current one (for every client); may switch notebooks. */
+  | { type: "page.goto"; pageId: string }
+  /** New page in the current notebook after `afterPageId` (default: the current page); it becomes current. */
+  | { type: "page.new"; afterPageId?: string }
+  | { type: "page.delete"; pageId: string }
+  | { type: "notebook.open"; id: string }
+  | { type: "notebook.new"; title: string; template: Template; kind: PageKind }
+  | { type: "notebook.update"; id: string; title?: string; template?: Template }
+  | { type: "notebook.delete"; id: string };
 
 // ---------------------------------------------------------------- server → client
 
@@ -112,8 +145,12 @@ export type ServerMsg =
   | { type: "pong"; t: number }
   /** A capability report posted by /probe (sent to viewers). */
   | { type: "probe.report"; file: string; report: unknown }
-  /** Full state of the active page; sent after welcome and whenever it is replaced. */
-  | { type: "snapshot"; page: PageInfo; strokes: StrokeData[]; viewport: Viewport | null }
+  /** Full state of the current page; sent after welcome and whenever another page becomes current. */
+  | ({ type: "snapshot"; page: PageInfo; strokes: StrokeData[]; viewport: Viewport | null } & NotebookState)
+  /** The current notebook changed shape (title, template, pages added / removed / grown) but the page didn't. */
+  | ({ type: "notebook.state" } & NotebookState)
+  /** Every notebook, most recently used first (sent to viewers). */
+  | { type: "notebooks"; notebooks: NotebookInfo[] }
   /** The strip moved (sent to everyone except the client that moved it). */
   | ({ type: "viewport" } & Viewport)
   /** Live stroke traffic from a pad, forwarded to viewers. */
@@ -134,6 +171,12 @@ export type ServerMsg =
   | { type: "settings"; ink: InkSettings }
   | { type: "error"; code: ErrorCode; message: string };
 
+export interface NotebookState {
+  notebook: NotebookInfo;
+  /** Pages of the notebook in order. */
+  pages: PageInfo[];
+}
+
 export type ErrorCode =
   | "bad_message"
   | "bad_token"
@@ -142,7 +185,9 @@ export type ErrorCode =
   | "hello_timeout"
   | "adb_failed"
   | "forbidden"
-  | "unknown_page";
+  | "unknown_page"
+  | "unknown_notebook"
+  | "not_allowed";
 
 /** Close codes used by the server (4000–4999 is the application range). */
 export const CloseCode = {
@@ -158,6 +203,16 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 const isStr = (v: unknown, max = 256): v is string => typeof v === "string" && v.length <= max;
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const isId = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 64;
+const isTemplate = (v: unknown): v is Template => TEMPLATES.includes(v as Template);
+const isKind = (v: unknown): v is PageKind => PAGE_KINDS.includes(v as PageKind);
+
+/** Trimmed, non-empty title of bounded length, or null. */
+function title(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim().replace(/\s+/g, " ");
+  return t.length > 0 && t.length <= LIMITS.titleLength ? t : null;
+}
+
 const isColor = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
 function isIdArray(v: unknown): v is string[] {
@@ -244,6 +299,34 @@ export function parseClientMsg(raw: string | Buffer): ClientMsg | null {
       if (!isId(v.pageId) || !(v.rect === null || isRect(v.rect))) return null;
       const r = v.rect as Rect | null;
       return { type: "viewport", pageId: v.pageId, rect: r && { x: r.x, y: r.y, w: r.w, h: r.h } };
+    }
+    case "page.goto":
+    case "page.delete":
+      return isId(v.pageId) ? { type: v.type, pageId: v.pageId } : null;
+    case "page.new":
+      if (v.afterPageId !== undefined && !isId(v.afterPageId)) return null;
+      return v.afterPageId === undefined ? { type: "page.new" } : { type: "page.new", afterPageId: v.afterPageId };
+    case "notebook.open":
+    case "notebook.delete":
+      return isId(v.id) ? { type: v.type, id: v.id } : null;
+    case "notebook.new": {
+      const t = title(v.title);
+      if (!t || !isTemplate(v.template) || !isKind(v.kind)) return null;
+      return { type: "notebook.new", title: t, template: v.template, kind: v.kind };
+    }
+    case "notebook.update": {
+      if (!isId(v.id)) return null;
+      const out: Extract<ClientMsg, { type: "notebook.update" }> = { type: "notebook.update", id: v.id };
+      if (v.title !== undefined) {
+        const t = title(v.title);
+        if (!t) return null;
+        out.title = t;
+      }
+      if (v.template !== undefined) {
+        if (!isTemplate(v.template)) return null;
+        out.template = v.template;
+      }
+      return out;
     }
     default:
       return null;

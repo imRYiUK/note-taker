@@ -267,6 +267,227 @@
       .fail {
         color: var(--bad);
       }
+      /* ---- header page navigation */
+      header h1#nb-name {
+        max-width: 26ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pagenav {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      #page-label {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+        min-width: 52px;
+        text-align: center;
+      }
+      /* ---- library sidebar */
+      #library {
+        width: 250px;
+        flex: none;
+        overflow: auto;
+        border-right: 1px solid var(--border);
+        background: var(--surface);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #library[hidden] {
+        display: none;
+      }
+      #library.offline {
+        opacity: 0.6;
+        pointer-events: none;
+      }
+      .lib-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .lib-head h2 {
+        margin: 0;
+      }
+      .lib-head button,
+      .lib-head select,
+      #nb-new button,
+      #nb-new select {
+        padding: 4px 8px;
+        font-size: 12px;
+      }
+      #nb-new {
+        display: grid;
+        gap: 6px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg);
+      }
+      #nb-new[hidden] {
+        display: none;
+      }
+      #nb-new input,
+      .nb input.rename {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 5px 7px;
+        font: inherit;
+        font-size: 13px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+      }
+      .choices {
+        display: flex;
+        gap: 6px;
+      }
+      .choices > * {
+        flex: 1;
+        min-width: 0;
+      }
+      #nb-list {
+        display: grid;
+        gap: 2px;
+      }
+      .nb {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        border-radius: 7px;
+        padding: 2px;
+      }
+      .nb.active {
+        background: color-mix(in srgb, var(--accent) 14%, transparent);
+      }
+      .nb-open {
+        flex: 1;
+        min-width: 0;
+        display: grid;
+        text-align: left;
+        border: 0;
+        background: transparent;
+        padding: 5px 6px;
+        border-radius: 6px;
+      }
+      .nb-open:hover {
+        background: color-mix(in srgb, var(--text) 6%, transparent);
+      }
+      .nb-title {
+        font-size: 13px;
+        font-weight: 550;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .nb-meta {
+        font-size: 11px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .nb-actions {
+        display: none;
+        gap: 2px;
+      }
+      .nb:hover .nb-actions,
+      .nb.active .nb-actions,
+      .nb-actions:has(.armed) {
+        display: flex;
+      }
+      button.icon {
+        border: 0;
+        background: transparent;
+        padding: 3px 6px;
+        font-size: 13px;
+        border-radius: 5px;
+        color: var(--muted);
+      }
+      button.icon:hover {
+        color: var(--text);
+        background: color-mix(in srgb, var(--text) 8%, transparent);
+      }
+      button.icon.armed {
+        color: #fff;
+        background: var(--bad);
+        font-size: 11px;
+      }
+      #thumbs {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        align-items: start;
+        padding-bottom: 8px;
+      }
+      .thumb {
+        position: relative;
+        cursor: pointer;
+        border-radius: 4px;
+        outline: 2px solid transparent;
+        outline-offset: 2px;
+      }
+      .thumb img {
+        display: block;
+        width: 100%;
+        background: #fff;
+        border-radius: 3px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      }
+      .thumb.active {
+        outline-color: var(--accent);
+      }
+      .thumb .num {
+        position: absolute;
+        left: 4px;
+        bottom: 4px;
+        font-size: 10px;
+        font-family: var(--mono);
+        padding: 0 4px;
+        border-radius: 3px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+      }
+      .thumb .kind {
+        position: absolute;
+        right: 4px;
+        bottom: 4px;
+        font-size: 11px;
+        padding: 0 4px;
+        border-radius: 3px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+      }
+      .thumb button.icon {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        display: none;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+      }
+      .thumb:hover button.icon,
+      .thumb button.icon.armed {
+        display: block;
+      }
+      .thumb.add {
+        aspect-ratio: 2100 / 2970;
+        border: 1.5px dashed var(--border);
+        background: transparent;
+        font-size: 22px;
+        color: var(--muted);
+      }
+      .thumb.add:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
       #toast {
         position: fixed;
         bottom: 16px;
@@ -286,7 +507,14 @@
   </head>
   <body>
     <header>
-      <h1>note-taker</h1>
+      <button id="library-toggle" type="button" aria-pressed="true" title="Notebooks and pages (B)">☰</button>
+      <h1 id="nb-name">note-taker</h1>
+      <div class="pagenav">
+        <button id="page-prev" type="button" title="Previous page (PageUp)" disabled>‹</button>
+        <span id="page-label">–</span>
+        <button id="page-next" type="button" title="Next page (PageDown)" disabled>›</button>
+        <button id="page-new" type="button" title="New page after this one (Ctrl+PageDown on the last page)" disabled>＋ Page</button>
+      </div>
       <div class="sep"></div>
       <button id="fit" type="button" title="Toggle fit width / whole page (F)">Fit: width</button>
       <button id="follow" type="button" aria-pressed="true" title="Scroll to keep the pen in view">Follow pen</button>
@@ -300,6 +528,29 @@
       <button id="panel-toggle" type="button" aria-pressed="true" title="Connection, devices and ink settings">Panel</button>
     </header>
     <div id="layout">
+      <aside id="library">
+        <div class="lib-head">
+          <h2>Notebooks</h2>
+          <button id="nb-new-btn" type="button" title="New notebook">＋ New</button>
+        </div>
+        <form id="nb-new" hidden autocomplete="off">
+          <input name="title" type="text" placeholder="Notebook title" maxlength="120" required />
+          <div class="choices">
+            <select name="template" title="Page background"></select>
+            <select name="kind" title="Page size"></select>
+          </div>
+          <div class="choices">
+            <button type="submit">Create</button>
+            <button id="nb-new-cancel" type="button">Cancel</button>
+          </div>
+        </form>
+        <div id="nb-list"></div>
+        <div class="lib-head">
+          <h2 id="pages-title">Pages</h2>
+          <select id="nb-template" title="Background of every page in this notebook"></select>
+        </div>
+        <div id="thumbs"></div>
+      </aside>
       <div id="stage"></div>
       <aside id="panel">
         <section>

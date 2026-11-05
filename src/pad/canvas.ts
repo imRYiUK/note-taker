@@ -13,8 +13,8 @@ import {
   type Rect,
 } from "../shared/ink.ts";
 import { hitsStroke, pointsBounds } from "../shared/hit.ts";
-import type { PageInfo, StrokeData } from "../shared/protocol.ts";
-import { drawRuling } from "../shared/templates.ts";
+import type { PageInfo, StrokeData, Template } from "../shared/protocol.ts";
+import { drawTemplate } from "../shared/templates.ts";
 
 const MARGIN = 10; // CSS px around the page in tablet mapping
 const SURROUND = "#121214";
@@ -36,6 +36,7 @@ export class PadCanvas {
   private readonly cctx = this.committed.getContext("2d", { alpha: false })!;
 
   page: PageInfo | null = null;
+  template: Template = "lined";
   private ink: InkSettings = DEFAULT_INK;
   private strokes: StrokeData[] = [];
   private readonly paths = new Map<string, { path: Path2D; bounds: Rect | null }>();
@@ -70,9 +71,10 @@ export class PadCanvas {
 
   // ------------------------------------------------------------ state
 
-  setPage(page: PageInfo, strokes: StrokeData[]): void {
+  setPage(page: PageInfo, strokes: StrokeData[], template: Template): void {
     const pageChanged = page.width !== this.page?.width || page.height !== this.page?.height;
     this.page = page;
+    this.template = template;
     this.strokes = strokes;
     this.paths.clear();
     this.centerBounds.clear();
@@ -80,7 +82,17 @@ export class PadCanvas {
     else this.redrawAll();
   }
 
+  /** Same page with a new size (an infinite page grew) and / or template. */
+  updatePage(page: PageInfo, template: Template): void {
+    if (page.id !== this.page?.id) return;
+    if (page.width === this.page.width && page.height === this.page.height && template === this.template) return;
+    this.page = page;
+    this.template = template;
+    this.layout();
+  }
+
   addStroke(s: StrokeData): void {
+    if (s.pageId !== this.page?.id || this.strokes.some((x) => x.id === s.id)) return;
     this.strokes.push(s);
     if (this.stale) return this.redrawAll();
     const { path, bounds } = this.path(s);
@@ -298,7 +310,7 @@ export class PadCanvas {
       c.fillStyle = PAPER;
       c.fillRect(0, 0, this.page.width, this.page.height);
       const vis = this.visibleRect();
-      drawRuling(c, this.page, this.scale * this.dpr, vis);
+      drawTemplate(c, this.template, this.page, this.scale * this.dpr, vis);
       for (const s of this.strokes) {
         const { path, bounds } = this.path(s);
         if (bounds && intersects(bounds, vis, s.width)) this.paintStroke(c, s, path);

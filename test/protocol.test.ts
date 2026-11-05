@@ -98,4 +98,39 @@ describe("parseClientMsg", () => {
     expect(parseClientMsg(j({ type: "settings.set", ink: { pressureGamma: "x" } }))).toBeNull();
     expect(parseClientMsg(j({ type: "settings.set" }))).toBeNull();
   });
+
+  test("notebook and page messages", () => {
+    expect(parseClientMsg(j({ type: "page.goto", pageId: "p" }))).toEqual({ type: "page.goto", pageId: "p" });
+    expect(parseClientMsg(j({ type: "page.goto" }))).toBeNull();
+    expect(parseClientMsg(j({ type: "page.new" }))).toEqual({ type: "page.new" });
+    expect(parseClientMsg(j({ type: "page.new", afterPageId: "p" }))).toEqual({ type: "page.new", afterPageId: "p" });
+    expect(parseClientMsg(j({ type: "page.new", afterPageId: 3 }))).toBeNull();
+    expect(parseClientMsg(j({ type: "page.delete", pageId: "p" }))).toEqual({ type: "page.delete", pageId: "p" });
+    expect(parseClientMsg(j({ type: "notebook.open", id: "n" }))).toEqual({ type: "notebook.open", id: "n" });
+    expect(parseClientMsg(j({ type: "notebook.delete", id: "" }))).toBeNull();
+
+    expect(parseClientMsg(j({ type: "notebook.new", title: "  Math \n 101 ", template: "grid", kind: "infinite" }))).toEqual({
+      type: "notebook.new",
+      title: "Math 101",
+      template: "grid",
+      kind: "infinite",
+    });
+    expect(parseClientMsg(j({ type: "notebook.new", title: "   ", template: "grid", kind: "a4" }))).toBeNull();
+    expect(parseClientMsg(j({ type: "notebook.new", title: "x".repeat(121), template: "grid", kind: "a4" }))).toBeNull();
+    expect(parseClientMsg(j({ type: "notebook.new", title: "x", template: "hex", kind: "a4" }))).toBeNull();
+    expect(parseClientMsg(j({ type: "notebook.new", title: "x", template: "grid", kind: "a5" }))).toBeNull();
+
+    expect(parseClientMsg(j({ type: "notebook.update", id: "n", title: "New" }))).toEqual({
+      type: "notebook.update",
+      id: "n",
+      title: "New",
+    });
+    expect(parseClientMsg(j({ type: "notebook.update", id: "n", template: "dotted", extra: 1 }))).toEqual({
+      type: "notebook.update",
+      id: "n",
+      template: "dotted",
+    });
+    expect(parseClientMsg(j({ type: "notebook.update", id: "n", title: "" }))).toBeNull();
+    expect(parseClientMsg(j({ type: "notebook.update", id: "n", template: "nope" }))).toBeNull();
+  });
 });

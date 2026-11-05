@@ -380,10 +380,20 @@ Each milestone ends with a working, usable state. Estimates assume part-time wor
   without ever manually moving the strip in normal use.
 
 ### M4 — Notebooks, pages, templates (1–2 days)
-- [ ] Multiple notebooks, multiple pages, infinite page kind.
-- [ ] Templates: blank / lined / grid / dotted.
-- [ ] Viewer sidebar: notebooks, thumbnails, rename/delete.
-- [ ] Page prev/next/new from phone toolbar.
+- [x] Multiple notebooks, multiple pages, infinite page kind (A4 width, grows in 5 cm steps to keep
+      10 cm free below the ink, max 10 A4 lengths). Schema v2 remembers each notebook's current page;
+      v1 databases migrate (their notebooks become "lined", which is what M3 drew).
+- [x] One current notebook + page shared by all clients (protocol 5: `page.goto/new/delete`,
+      `notebook.open/new/update/delete`, `notebook.state`, `notebooks`). Strokes are accepted for any
+      existing page (outbox strokes land where they were drawn); undo of a step on another page
+      navigates there. A page switch that arrives mid-stroke waits for pen-up on the pad.
+- [x] Templates: blank / lined / grid / dotted, per notebook, all aligned to the same 8 mm writing
+      lines (grid/dots every 4 mm from the margin) so the strip logic is unchanged.
+- [x] Viewer sidebar (`B`): notebooks (new with template + page kind, rename, delete with
+      click-twice confirm), template switch, page thumbnails (server SVG `/api/export/:pageId.svg`,
+      refreshed ~1 s after changes), add/delete pages. Header ‹ n/N › ＋ and `PageUp/PageDown`.
+- [x] Page prev / next / new from the phone toolbar.
+- [ ] **On device:** a day of real notes across two notebooks on the S23.
 - **Done when:** you can keep a real class/meeting notebook across days.
 
 ### M5 — Polish of the writing experience (1–2 days)

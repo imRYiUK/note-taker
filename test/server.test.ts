@@ -235,7 +235,7 @@ describe("server", () => {
     const before = (await again.expect("snapshot")).strokes.length;
     again.send({ type: "stroke.begin", id: "dup", pageId, tool: "pen", color: "#000000", width: 10 });
     expect(await again.expect("stroke.ack")).toEqual({ type: "stroke.ack", id: "dup" });
-    expect(app.hub.notebook.strokeCount).toBe(before);
+    expect(app.hub.library.strokeCount).toBe(before);
     again.ws.close();
   });
 
@@ -243,12 +243,12 @@ describe("server", () => {
     const pad = await client();
     pad.send(hello("pad"));
     const pageId = (await pad.expect("snapshot")).page.id;
-    const count = app.hub.notebook.strokeCount;
+    const count = app.hub.library.strokeCount;
     pad.send({ type: "stroke.begin", id: "gap", pageId, tool: "pen", color: "#000000", width: 10 });
     pad.send({ type: "stroke.points", id: "gap", pts: [5, 5, 0.3, 0] });
     pad.send({ type: "stroke.end", id: "gap", n: 3 });
     expect(await pad.expect("stroke.resync")).toEqual({ type: "stroke.resync", id: "gap" });
-    expect(app.hub.notebook.strokeCount).toBe(count);
+    expect(app.hub.library.strokeCount).toBe(count);
     pad.ws.close();
   });
 
@@ -351,6 +351,94 @@ describe("server", () => {
     pad.send({ type: "viewport", pageId: "old-page", rect });
     expect((await pad.expect("error")).code).toBe("unknown_page");
     for (const c of [pad, viewer, late]) c.ws.close();
+  });
+
+  test("pages: new / goto from the pad reach everyone; only the viewer deletes", async () => {
+    const viewer = await client();
+    viewer.send(hello("viewer"));
+    const first = await viewer.expect("snapshot");
+    expect(first.notebook.pages).toBe(first.pages.length);
+    expect((await viewer.expect("notebooks")).notebooks.map((n) => n.id)).toContain(first.notebook.id);
+    const pad = await client();
+    pad.send(hello("pad"));
+    await pad.expect("snapshot");
+
+    pad.send({ type: "page.new", afterPageId: first.page.id });
+    const snap = await viewer.expect("snapshot");
+    expect(snap.pages).toHaveLength(first.pages.length + 1);
+    expect(snap.page.id).not.toBe(first.page.id);
+    expect(snap.strokes).toEqual([]);
+    expect((await pad.expect("snapshot")).page.id).toBe(snap.page.id);
+    expect((await viewer.expect("notebooks")).notebooks.find((n) => n.id === snap.notebook.id)?.pages).toBe(snap.pages.length);
+
+    pad.send({ type: "page.delete", pageId: snap.page.id });
+    expect((await pad.expect("error")).code).toBe("forbidden");
+    pad.send({ type: "page.goto", pageId: "nope" });
+    expect((await pad.expect("error")).code).toBe("unknown_page");
+
+    // A stroke for the page the pad just left still lands there.
+    pad.send({ type: "page.goto", pageId: first.page.id });
+    expect((await viewer.expect("snapshot")).page.id).toBe(first.page.id);
+    pad.send({ type: "stroke.begin", id: "left-behind", pageId: snap.page.id, tool: "pen", color: "#000000", width: 10 });
+    pad.send({ type: "stroke.points", id: "left-behind", pts: [5, 5, 0.3, 0] });
+    pad.send({ type: "stroke.end", id: "left-behind", n: 1 });
+    expect((await pad.expect("stroke.ack")).id).toBe("left-behind");
+
+    // Thumbnail / export of that page.
+    const res = await fetch(`${app.url}/api/export/${snap.page.id}.svg?thumb=1`);
+    expect(res.headers.get("content-type")).toContain("image/svg+xml");
+    const svg = await res.text();
+    expect(svg).toStartWith("<svg");
+    expect(svg.match(/<path d="M/g)?.length).toBeGreaterThanOrEqual(2); // ruling + the stroke
+    expect((await fetch(`${app.url}/api/export/nope.svg`)).status).toBe(404);
+
+    // Undo of that stroke takes everyone to its page.
+    viewer.send({ type: "undo" });
+    expect((await pad.expect("snapshot")).page.id).toBe(snap.page.id);
+
+    viewer.send({ type: "page.delete", pageId: snap.page.id });
+    const after = await pad.expect("snapshot");
+    expect(after.pages.map((p) => p.id)).not.toContain(snap.page.id);
+    pad.ws.close();
+    viewer.ws.close();
+  });
+
+  test("notebooks: create, rename / template, open, delete", async () => {
+    const viewer = await client();
+    viewer.send(hello("viewer"));
+    const start = await viewer.expect("snapshot");
+    await viewer.expect("notebooks"); // the one sent with welcome
+    const pad = await client();
+    pad.send(hello("pad"));
+    await pad.expect("snapshot");
+
+    pad.send({ type: "notebook.new", title: "Nope", template: "grid", kind: "a4" });
+    expect((await pad.expect("error")).code).toBe("forbidden");
+
+    viewer.send({ type: "notebook.new", title: "Physics", template: "grid", kind: "infinite" });
+    const snap = await pad.expect("snapshot");
+    expect(snap.notebook).toMatchObject({ title: "Physics", template: "grid", pages: 1 });
+    expect(snap.page.kind).toBe("infinite");
+    expect((await viewer.expect("notebooks")).notebooks[0]?.title).toBe("Physics");
+
+    viewer.send({ type: "notebook.update", id: snap.notebook.id, title: "Physics II", template: "dotted" });
+    expect((await pad.expect("notebook.state")).notebook).toMatchObject({ title: "Physics II", template: "dotted" });
+    await viewer.expect("notebook.state");
+
+    // Writing low on an endless page grows it for everyone.
+    pad.send({ type: "stroke.begin", id: "deep", pageId: snap.page.id, tool: "pen", color: "#000000", width: 10 });
+    pad.send({ type: "stroke.points", id: "deep", pts: [100, 2800, 0.3, 0] });
+    pad.send({ type: "stroke.end", id: "deep", n: 1 });
+    expect((await viewer.expect("notebook.state")).pages[0]?.height).toBe(4000);
+
+    viewer.send({ type: "notebook.open", id: start.notebook.id });
+    expect((await pad.expect("snapshot")).page.id).toBe(start.page.id);
+    viewer.send({ type: "notebook.delete", id: snap.notebook.id });
+    expect((await viewer.expect("notebooks")).notebooks.map((n) => n.id)).not.toContain(snap.notebook.id);
+    viewer.send({ type: "notebook.open", id: snap.notebook.id });
+    expect((await viewer.expect("error")).code).toBe("unknown_notebook");
+    pad.ws.close();
+    viewer.ws.close();
   });
 
   test("notes survive a server restart", async () => {

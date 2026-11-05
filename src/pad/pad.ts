@@ -7,13 +7,24 @@
 // that moves on by itself as you write (shared/strip.ts). Tablet mode shows the
 // whole page.
 //
+// Pages: the server decides which page is current (pad and viewer follow the
+// same one). A page switch that arrives mid-stroke waits for pen-up.
+//
 // Reliability: every finished stroke goes into an outbox (also kept in
 // localStorage) until the server acks it; after a reconnect the outbox is
 // re-sent and the server drops duplicates by stroke id.
 
 import { Connection, uid, type ConnStatus } from "../shared/connection.ts";
 import { DEFAULT_PEN_COLOR, DEFAULT_PEN_WIDTH, POINT_STRIDE, type Rect } from "../shared/ink.ts";
-import { LIMITS, type HistoryState, type PageInfo, type StrokeData, type Viewport } from "../shared/protocol.ts";
+import {
+  LIMITS,
+  type HistoryState,
+  type NotebookState,
+  type PageInfo,
+  type ServerMsg,
+  type StrokeData,
+  type Viewport,
+} from "../shared/protocol.ts";
 import { Strip, ZOOM_LIMITS, lerpRect } from "../shared/strip.ts";
 import { LINED } from "../shared/templates.ts";
 import { PadCanvas } from "./canvas.ts";
@@ -143,64 +154,149 @@ const conn: Connection = new Connection("pad", {
     $("#status-detail").textContent = `${rtt.toFixed(1)} ms`;
   },
   onMessage: (msg) => {
-    switch (msg.type) {
-      case "snapshot": {
-        // Strokes the server doesn't have yet stay visible; offline erases stay hidden.
-        const known = new Set(msg.strokes.map((s) => s.id));
-        const hidden = new Set(pendingErases.flatMap((e) => e.strokeIds));
-        const unsynced = [...outbox.values()]
-          .map((e) => e.stroke)
-          .filter((s) => s.pageId === msg.page.id && !known.has(s.id));
-        pad.setPage(msg.page, [...msg.strokes.filter((s) => !hidden.has(s.id)), ...unsynced]);
-        initStrip(msg.page, msg.viewport);
-        break;
-      }
-      case "viewport":
-        // Moved from the PC. A null rect is another pad in tablet mode: keep ours.
-        if (msg.pageId === pad.page?.id && msg.rect) {
-          remoteMove = { x: msg.rect.x, y: msg.rect.y };
-          applyRemoteMove();
-        }
-        break;
-      case "stroke.added":
-        pad.addStroke(msg.stroke);
-        break;
-      case "stroke.ack":
-        if (outbox.delete(msg.id)) {
-          saveOutbox();
-          renderPending();
-        }
-        break;
-      case "stroke.resync": {
-        const e = outbox.get(msg.id);
-        if (!e) break;
-        if (++e.resyncs > 3) {
-          console.warn(`[pad] stroke ${msg.id} keeps failing to sync; will retry after reconnecting`);
-          break;
-        }
-        e.sentGen = -1;
-        flushOutbox();
-        break;
-      }
-      case "strokes.removed":
-        if (msg.pageId === pad.page?.id) pad.removeStrokes(msg.ids);
-        break;
-      case "strokes.restored":
-        pad.restoreStrokes(msg.strokes);
-        break;
-      case "history":
-        history = { canUndo: msg.canUndo, canRedo: msg.canRedo };
-        renderHistory();
-        break;
-      case "settings":
-        pad.setInk(msg.ink);
-        break;
-    }
+    if (!defer(msg)) handle(msg);
   },
 });
 
+// Page-level messages. While the pen is down, a page switch or resize waits —
+// together with everything page-related after it — until the pen lifts.
+const PAGE_MSGS = new Set<ServerMsg["type"]>([
+  "snapshot",
+  "notebook.state",
+  "viewport",
+  "stroke.added",
+  "strokes.removed",
+  "strokes.restored",
+]);
+let deferred: ServerMsg[] | null = null;
+
+function defer(msg: ServerMsg): boolean {
+  if (!PAGE_MSGS.has(msg.type)) return false;
+  if (deferred) {
+    deferred.push(msg);
+    return true;
+  }
+  if ((msg.type === "snapshot" || msg.type === "notebook.state") && (active || erasing)) {
+    deferred = [msg];
+    return true;
+  }
+  return false;
+}
+
+function replayDeferred(): void {
+  const q = deferred;
+  deferred = null;
+  for (const m of q ?? []) handle(m);
+}
+
+function handle(msg: ServerMsg): void {
+  switch (msg.type) {
+    case "snapshot": {
+      // Strokes the server doesn't have yet stay visible; offline erases stay hidden.
+      const known = new Set(msg.strokes.map((s) => s.id));
+      const hidden = new Set(pendingErases.flatMap((e) => e.strokeIds));
+      const unsynced = [...outbox.values()]
+        .map((e) => e.stroke)
+        .filter((s) => s.pageId === msg.page.id && !known.has(s.id));
+      pad.setPage(msg.page, [...msg.strokes.filter((s) => !hidden.has(s.id)), ...unsynced], msg.notebook.template);
+      setNotebook(msg);
+      initStrip(msg.page, msg.viewport);
+      break;
+    }
+    case "notebook.state": {
+      setNotebook(msg);
+      const page = msg.pages.find((p) => p.id === pad.page?.id);
+      if (!page) break;
+      pad.updatePage(page, msg.notebook.template);
+      // An infinite page grew: the strip may now go further down. Its rect stays put.
+      if (strip && (strip.page.width !== page.width || strip.page.height !== page.height)) {
+        const r = strip.rect;
+        strip = new Strip(page, { w: r.w, h: r.h });
+        strip.moveTo(r.x, r.y);
+      }
+      break;
+    }
+    case "viewport":
+      // Moved from the PC. A null rect is another pad in tablet mode: keep ours.
+      if (msg.pageId === pad.page?.id && msg.rect) {
+        remoteMove = { x: msg.rect.x, y: msg.rect.y };
+        applyRemoteMove();
+      }
+      break;
+    case "stroke.added":
+      pad.addStroke(msg.stroke);
+      break;
+    case "stroke.ack":
+      if (outbox.delete(msg.id)) {
+        saveOutbox();
+        renderPending();
+      }
+      break;
+    case "stroke.resync": {
+      const e = outbox.get(msg.id);
+      if (!e) break;
+      if (++e.resyncs > 3) {
+        console.warn(`[pad] stroke ${msg.id} keeps failing to sync; will retry after reconnecting`);
+        break;
+      }
+      e.sentGen = -1;
+      flushOutbox();
+      break;
+    }
+    case "strokes.removed":
+      if (msg.pageId === pad.page?.id) pad.removeStrokes(msg.ids);
+      break;
+    case "strokes.restored":
+      pad.restoreStrokes(msg.strokes);
+      break;
+    case "history":
+      history = { canUndo: msg.canUndo, canRedo: msg.canRedo };
+      renderHistory();
+      break;
+    case "settings":
+      pad.setInk(msg.ink);
+      break;
+  }
+}
+
 loadOutbox();
 renderPending();
+
+// ------------------------------------------------------------------ pages
+
+let notebook: NotebookState | null = null;
+
+function setNotebook(state: NotebookState): void {
+  notebook = { notebook: state.notebook, pages: state.pages };
+  renderPages();
+}
+
+function pageIndex(): number {
+  return notebook?.pages.findIndex((p) => p.id === pad.page?.id) ?? -1;
+}
+
+function renderPages(): void {
+  const online = connStatus === "open";
+  const i = pageIndex();
+  const n = notebook?.pages.length ?? 0;
+  const label = $("#page-label");
+  label.textContent = i >= 0 ? `${i + 1}/${n}` : "–";
+  label.title = notebook ? `${notebook.notebook.title} — page ${i + 1} of ${n}` : "";
+  $<HTMLButtonElement>("#page-prev").disabled = !online || i <= 0;
+  $<HTMLButtonElement>("#page-next").disabled = !online || i < 0 || i >= n - 1;
+  $<HTMLButtonElement>("#page-new").disabled = !online || !pad.page;
+}
+
+function gotoPage(delta: number): void {
+  if (active || erasing || !notebook) return;
+  const p = notebook.pages[pageIndex() + delta];
+  if (p) conn.send({ type: "page.goto", pageId: p.id });
+}
+$("#page-prev").addEventListener("click", () => gotoPage(-1));
+$("#page-next").addEventListener("click", () => gotoPage(1));
+$("#page-new").addEventListener("click", () => {
+  if (!active && !erasing && pad.page) conn.send({ type: "page.new", afterPageId: pad.page.id });
+});
 
 // ------------------------------------------------------------------ toolbar
 
@@ -415,6 +511,7 @@ function renderHistory() {
   const online = connStatus === "open";
   $<HTMLButtonElement>("#undo").disabled = !online || !history.canUndo;
   $<HTMLButtonElement>("#redo").disabled = !online || !history.canRedo;
+  renderPages();
 }
 
 // ------------------------------------------------------------------ input: ink
@@ -537,6 +634,7 @@ function finish(): void {
   pad.addStroke(stroke);
   if (n) armAdvance(s.pts[(n - 1) * POINT_STRIDE]!);
   applyRemoteMove();
+  replayDeferred();
 }
 
 /** Send whatever the server hasn't seen yet for the active stroke. */
@@ -629,6 +727,7 @@ function endErase(): void {
   erasing = null;
   pad.drawEraser(null);
   applyRemoteMove();
+  replayDeferred();
 }
 
 // ------------------------------------------------------------------ input: fingers

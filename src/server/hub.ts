@@ -13,7 +13,7 @@ import {
 import type { InkSettings } from "../shared/ink.ts";
 import { authorize } from "./net.ts";
 import type { AdbWatcher } from "./adb.ts";
-import type { Change, Notebook } from "./notebook.ts";
+import type { Change, Library } from "./notebook.ts";
 
 export interface WsData {
   id: string;
@@ -35,7 +35,7 @@ export interface HubOptions {
   log: (msg: string) => void;
   helloTimeoutMs?: number;
   pingIntervalMs?: number;
-  notebook: Notebook;
+  library: Library;
   ink: InkSettings;
   /** Called after ink settings change (to persist them). */
   onInkChange?: (ink: InkSettings) => void;
@@ -45,13 +45,13 @@ export interface HubOptions {
 export class Hub {
   private readonly sockets = new Set<Ws>();
   private pingTimer: ReturnType<typeof setInterval> | null = null;
-  readonly notebook: Notebook;
+  readonly library: Library;
   ink: InkSettings;
   /** Where the pad's strip is (memory only: the pad also remembers it). */
   viewport: Viewport | null = null;
 
   constructor(private readonly opts: HubOptions) {
-    this.notebook = opts.notebook;
+    this.library = opts.library;
     this.ink = opts.ink;
     this.pingTimer = setInterval(() => this.pingAll(), opts.pingIntervalMs ?? 2000);
   }
@@ -74,7 +74,7 @@ export class Hub {
     this.sockets.delete(ws);
     if (ws.data.helloTimer) clearTimeout(ws.data.helloTimer);
     if (ws.data.info) {
-      for (const id of this.notebook.dropLive(ws.data.id)) this.toViewers({ type: "stroke.cancel", id });
+      for (const id of this.library.dropLive(ws.data.id)) this.toViewers({ type: "stroke.cancel", id });
       this.opts.log(`${ws.data.info.role} disconnected (${ws.data.info.transport}, ${ws.data.ip})`);
       this.broadcastClients();
     }
@@ -113,23 +113,74 @@ export class Hub {
         this.stroke(ws, msg);
         break;
       case "erase":
-        this.applyChange(ws, this.notebook.erase(msg.pageId, msg.strokeIds, msg.group), msg.pageId);
+        this.applyChange(ws, this.library.erase(msg.pageId, msg.strokeIds, msg.group), msg.pageId);
         break;
+      case "page.goto":
+        if (!this.library.goto(msg.pageId)) this.unknownPage(ws, msg.pageId);
+        else this.pageChanged();
+        break;
+      case "page.new":
+        if (!this.library.newPage(msg.afterPageId)) {
+          this.send(ws, { type: "error", code: "not_allowed", message: "could not add a page" });
+          break;
+        }
+        this.pageChanged(true);
+        break;
+      case "page.delete": {
+        if (!this.viewerOnly(ws)) break;
+        const res = this.library.deletePage(msg.pageId);
+        if (!res.ok) {
+          if (!this.library.hasPage(msg.pageId)) this.unknownPage(ws, msg.pageId);
+          else this.send(ws, { type: "error", code: "not_allowed", message: "a notebook needs at least one page" });
+          break;
+        }
+        if (res.switched) this.pageChanged(true);
+        else this.structureChanged();
+        break;
+      }
+      case "notebook.open":
+        if (!this.viewerOnly(ws)) break;
+        if (!this.library.openNotebook(msg.id)) this.unknownNotebook(ws, msg.id);
+        else this.pageChanged();
+        break;
+      case "notebook.new":
+        if (!this.viewerOnly(ws)) break;
+        this.library.newNotebook(msg.title, msg.template, msg.kind);
+        this.opts.log(`notebook created: ${msg.title}`);
+        this.pageChanged(true);
+        break;
+      case "notebook.update":
+        if (!this.viewerOnly(ws)) break;
+        if (!this.library.updateNotebook(msg.id, msg)) this.unknownNotebook(ws, msg.id);
+        else this.structureChanged();
+        break;
+      case "notebook.delete": {
+        if (!this.viewerOnly(ws)) break;
+        const res = this.library.deleteNotebook(msg.id);
+        if (!res.ok) this.unknownNotebook(ws, msg.id);
+        else if (res.switched) this.pageChanged(true);
+        else this.broadcastNotebooks();
+        break;
+      }
       case "page.clear": {
-        const change = this.notebook.clear(msg.pageId);
+        const change = this.library.clear(msg.pageId);
         if (change?.removed) this.opts.log(`page cleared (${change.removed.ids.length} strokes)`);
         this.applyChange(ws, change, msg.pageId);
         break;
       }
       case "undo":
       case "redo": {
-        const change = msg.type === "undo" ? this.notebook.undo() : this.notebook.redo();
-        if (change) this.applyChange(ws, change);
+        const change = msg.type === "undo" ? this.library.undo() : this.library.redo();
+        if (!change) break;
+        // A step on another page of the notebook: go there, so you see what changed.
+        if (change.pageId !== this.library.page.id && this.library.goto(change.pageId)) this.pageChanged();
+        else this.applyChange(ws, change);
         break;
       }
       case "viewport":
-        if (msg.pageId !== this.notebook.page.id) {
-          this.send(ws, { type: "error", code: "unknown_page", message: `no page ${msg.pageId}` });
+        // Only the current page has a strip; a pad that hasn't caught up yet is ignored.
+        if (msg.pageId !== this.library.page.id) {
+          if (!this.library.hasPage(msg.pageId)) this.unknownPage(ws, msg.pageId);
           break;
         }
         this.viewport = { pageId: msg.pageId, rect: msg.rect };
@@ -147,7 +198,7 @@ export class Hub {
     ws: Ws,
     msg: Extract<ClientMsg, { type: "stroke.begin" | "stroke.points" | "stroke.end" | "stroke.cancel" }>,
   ): void {
-    const nb = this.notebook;
+    const nb = this.library;
     const owner = ws.data.id;
     switch (msg.type) {
       case "stroke.begin": {
@@ -155,7 +206,7 @@ export class Hub {
         if (res === "ok") this.toViewers(msg);
         else if (res === "duplicate") this.send(ws, { type: "stroke.ack", id: msg.id });
         else {
-          this.send(ws, { type: "error", code: "unknown_page", message: `no page ${msg.pageId}` });
+          this.unknownPage(ws, msg.pageId);
           // The pad is out of date — give it the current page; it drops the stroke from its outbox.
           this.send(ws, { type: "stroke.ack", id: msg.id });
           this.send(ws, this.snapshot());
@@ -175,10 +226,14 @@ export class Hub {
           this.opts.log(`stroke ${msg.id}: ${res.missing} point(s) missing — asking for a resend`);
           this.toViewers({ type: "stroke.cancel", id: msg.id });
           this.send(ws, { type: "stroke.resync", id: msg.id });
+        } else if (res.kind === "gone") {
+          this.toViewers({ type: "stroke.cancel", id: msg.id });
+          this.send(ws, { type: "stroke.ack", id: msg.id });
         } else {
           this.send(ws, { type: "stroke.ack", id: msg.id });
           this.broadcast({ type: "stroke.added", stroke: res.stroke }, ws);
           this.broadcast({ type: "history", ...nb.history() });
+          if (res.grown?.notebookId === nb.notebook.id) this.broadcast({ type: "notebook.state", ...nb.state() });
         }
         break;
       }
@@ -191,14 +246,44 @@ export class Hub {
   /** Broadcast the effect of an erase / undo / redo. */
   private applyChange(ws: Ws, change: Change | null, pageId?: string): void {
     if (!change) {
-      if (pageId && pageId !== this.notebook.page.id) {
-        this.send(ws, { type: "error", code: "unknown_page", message: `no page ${pageId}` });
-      }
+      if (pageId && !this.library.hasPage(pageId)) this.unknownPage(ws, pageId);
       return;
     }
     if (change.removed) this.broadcast({ type: "strokes.removed", ...change.removed });
     if (change.restored.length) this.broadcast({ type: "strokes.restored", strokes: change.restored });
-    this.broadcast({ type: "history", ...this.notebook.history() });
+    this.broadcast({ type: "history", ...this.library.history() });
+  }
+
+  /** Another page became current: everyone gets its snapshot. `list`: the notebook list changed too. */
+  private pageChanged(list = false): void {
+    this.broadcast(this.snapshot());
+    this.broadcast({ type: "history", ...this.library.history() });
+    if (list) this.broadcastNotebooks();
+  }
+
+  /** The current notebook's title / template / pages changed (or another notebook's). */
+  private structureChanged(): void {
+    this.broadcast({ type: "notebook.state", ...this.library.state() });
+    this.broadcast({ type: "history", ...this.library.history() });
+    this.broadcastNotebooks();
+  }
+
+  broadcastNotebooks(): void {
+    this.toViewers({ type: "notebooks", notebooks: this.library.notebooks() });
+  }
+
+  private viewerOnly(ws: Ws): boolean {
+    if (ws.data.info?.role === "viewer") return true;
+    this.send(ws, { type: "error", code: "forbidden", message: "only the viewer manages notebooks" });
+    return false;
+  }
+
+  private unknownPage(ws: Ws, pageId: string): void {
+    this.send(ws, { type: "error", code: "unknown_page", message: `no page ${pageId}` });
+  }
+
+  private unknownNotebook(ws: Ws, id: string): void {
+    this.send(ws, { type: "error", code: "unknown_notebook", message: `no notebook ${id}` });
   }
 
   private hello(ws: Ws, msg: Extract<ClientMsg, { type: "hello" }>): void {
@@ -241,8 +326,9 @@ export class Hub {
     });
     this.send(ws, { type: "settings", ink: this.ink });
     this.send(ws, this.snapshot());
-    this.send(ws, { type: "history", ...this.notebook.history() });
+    this.send(ws, { type: "history", ...this.library.history() });
     if (msg.role === "viewer") {
+      this.send(ws, { type: "notebooks", notebooks: this.library.notebooks() });
       this.sendDevices(ws);
     }
     this.broadcastClients();
@@ -299,8 +385,8 @@ export class Hub {
   }
 
   private snapshot(): ServerMsg {
-    const vp = this.viewport?.pageId === this.notebook.page.id ? this.viewport : null;
-    return { type: "snapshot", ...this.notebook.snapshot(), viewport: vp };
+    const vp = this.viewport?.pageId === this.library.page.id ? this.viewport : null;
+    return { type: "snapshot", ...this.library.snapshot(), viewport: vp };
   }
 
   private send(ws: Ws, msg: ServerMsg): void {

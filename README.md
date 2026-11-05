@@ -2,15 +2,17 @@
 
 Write with the S Pen on your phone, see it live on your PC. See [PLAN.md](PLAN.md).
 
-## Status: M2 — persistence & reliability
+## Status: M4 — notebooks, pages, templates
 
-- Notes are stored in SQLite (`~/.local/share/note-taker/notes.db`) — server restarts lose nothing
-- Pad keeps unsent strokes in an outbox (survives reloads) and re-sends them after reconnecting;
-  the status pill shows "N unsynced" while offline
-- Undo / redo shared by phone and PC: pad buttons, **two-finger tap = undo, three-finger tap = redo**,
-  viewer buttons and `Ctrl+Z` / `Ctrl+Shift+Z`; clearing a page is undoable
-- Stroke eraser: toggle ⌫ in the pad toolbar, then swipe over strokes (one swipe = one undo step)
+- Several notebooks, each with many pages; A4 or **endless** pages (grow as you write)
+- Backgrounds per notebook: lined, grid, dotted, blank
+- Viewer sidebar (☰ or `B`): open / create / rename / delete notebooks, change the template, page
+  thumbnails (click to go, ＋ to add, × twice to delete). `PageUp` / `PageDown` change page
+- Pad toolbar: ‹ n/N › ＋ — phone and PC always show the same page
+- Each notebook reopens on the page you left it on, also after a server restart
 
+From M3: zoom-strip mode (magnified window that advances as you write). From M2: SQLite storage,
+pad outbox, shared undo/redo (two-finger tap = undo, three-finger tap = redo), stroke eraser.
 From M1: live pressure-sensitive ink on a single A4 page (whole page mapped onto the phone), pressure
 curve in **Panel → Ink**, only the S Pen draws (palm rejection). From M0: USB with automatic
 `adb reverse`, "Open pad / Open probe" from the viewer, token-protected Wi-Fi URL.

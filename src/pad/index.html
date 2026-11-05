@@ -64,6 +64,17 @@
         padding: 3px;
         border-radius: 10px;
         background: rgba(28, 28, 31, 0.72);
+        align-items: center;
+        flex-wrap: wrap;
+        /* Leave room for the status pill on the right. */
+        max-width: calc(100vw - 150px);
+      }
+      #page-label {
+        min-width: 34px;
+        text-align: center;
+        font-size: 12px;
+        font-family: var(--mono);
+        color: #c6c6cc;
       }
       #toolbar button {
         min-width: 40px;
@@ -139,6 +150,11 @@
       <button id="mode" type="button" title="Zoom strip / whole page">Strip</button>
       <button id="back" type="button" title="Strip: one step back">←</button>
       <button id="newline" type="button" title="Strip: next line (or tap the left edge)">↵</button>
+      <span class="sep"></span>
+      <button id="page-prev" type="button" title="Previous page" disabled>‹</button>
+      <span id="page-label">–</span>
+      <button id="page-next" type="button" title="Next page" disabled>›</button>
+      <button id="page-new" type="button" title="New page after this one" disabled>＋</button>
     </div>
     <button id="margin" type="button" aria-label="Next line" title="Next line"></button>
     <div id="status">

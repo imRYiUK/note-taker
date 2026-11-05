@@ -4,13 +4,14 @@
 
 import { Database } from "bun:sqlite";
 import { A4, POINT_STRIDE } from "../shared/ink.ts";
-import type { PageInfo, StrokeData, Tool } from "../shared/protocol.ts";
+import type { NotebookInfo, PageInfo, PageKind, StrokeData, Template, Tool } from "../shared/protocol.ts";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
+// v2: notebooks.current_page (reopen where you left off).
 const SCHEMA = `
 CREATE TABLE notebooks (id TEXT PRIMARY KEY, title TEXT NOT NULL, template TEXT NOT NULL,
-                        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, current_page TEXT);
 CREATE TABLE pages     (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL REFERENCES notebooks(id),
                         idx INTEGER NOT NULL, kind TEXT NOT NULL, width REAL NOT NULL, height REAL NOT NULL);
 CREATE TABLE strokes   (id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES pages(id), tool TEXT NOT NULL,
@@ -39,9 +40,21 @@ export interface Op {
   undone: boolean;
 }
 
-export interface NotebookRow {
+interface NotebookRow {
   id: string;
   title: string;
+  template: string;
+  created_at: number;
+  updated_at: number;
+  pages: number;
+}
+
+interface PageRow {
+  id: string;
+  notebook_id: string;
+  kind: string;
+  width: number;
+  height: number;
 }
 
 interface StrokeRow {
@@ -88,6 +101,27 @@ function toStroke(r: StrokeRow): StrokeData {
   };
 }
 
+const toNotebook = (r: NotebookRow): NotebookInfo => ({
+  id: r.id,
+  title: r.title,
+  template: r.template as Template,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+  pages: r.pages,
+});
+
+const toPage = (r: PageRow): PageInfo => ({
+  id: r.id,
+  notebookId: r.notebook_id,
+  kind: r.kind as PageKind,
+  width: r.width,
+  height: r.height,
+});
+
+const NOTEBOOK_COLS = `id, title, template, created_at, updated_at,
+  (SELECT COUNT(*) FROM pages p WHERE p.notebook_id = notebooks.id) AS pages`;
+const PAGE_COLS = "id, notebook_id, kind, width, height";
+
 const toOp = (r: OpRow): Op => ({
   seq: r.seq,
   kind: r.kind as OpKind,
@@ -127,7 +161,13 @@ export class Store {
       throw new Error(`database schema v${user_version} is newer than this server (v${SCHEMA_VERSION})`);
     }
     this.tx(() => {
-      this.db.exec(SCHEMA);
+      if (user_version === 0) {
+        this.db.exec(SCHEMA);
+      } else if (user_version === 1) {
+        this.db.exec("ALTER TABLE notebooks ADD COLUMN current_page TEXT");
+        // v1 stored 'blank' but always drew ruled lines: keep what people saw.
+        this.db.exec("UPDATE notebooks SET template = 'lined' WHERE template = 'blank'");
+      }
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     });
   }
@@ -136,35 +176,122 @@ export class Store {
     return this.db.transaction(fn)();
   }
 
-  // ------------------------------------------------------------ notebooks & pages
+  // ------------------------------------------------------------ notebooks
 
-  /** The most recently used notebook and its first page, created on first run. */
-  openDefault(now: number): { notebook: NotebookRow; page: PageInfo } {
+  /** All notebooks, most recently used first. */
+  notebooks(): NotebookInfo[] {
+    const rows = this.db
+      .query(`SELECT ${NOTEBOOK_COLS} FROM notebooks ORDER BY updated_at DESC, rowid DESC`)
+      .all() as NotebookRow[];
+    return rows.map(toNotebook);
+  }
+
+  notebook(id: string): NotebookInfo | null {
+    const r = this.db.query(`SELECT ${NOTEBOOK_COLS} FROM notebooks WHERE id = ?`).get(id) as NotebookRow | null;
+    return r && toNotebook(r);
+  }
+
+  /** A new notebook with one empty page. */
+  createNotebook(title: string, template: Template, kind: PageKind, now: number): { notebook: NotebookInfo; page: PageInfo } {
     return this.tx(() => {
-      let nb = this.db
-        .query("SELECT id, title FROM notebooks ORDER BY updated_at DESC LIMIT 1")
-        .get() as NotebookRow | null;
-      if (!nb) {
-        nb = { id: crypto.randomUUID(), title: "Notes" };
-        this.db
-          .query("INSERT INTO notebooks (id, title, template, created_at, updated_at) VALUES (?, ?, 'blank', ?, ?)")
-          .run(nb.id, nb.title, now, now);
-      }
-      let page = this.db
-        .query("SELECT id, width, height FROM pages WHERE notebook_id = ? ORDER BY idx LIMIT 1")
-        .get(nb.id) as PageInfo | null;
-      if (!page) {
-        page = { id: crypto.randomUUID(), width: A4.width, height: A4.height };
-        this.db
-          .query("INSERT INTO pages (id, notebook_id, idx, kind, width, height) VALUES (?, ?, 0, 'a4', ?, ?)")
-          .run(page.id, nb.id, page.width, page.height);
-      }
-      return { notebook: nb, page };
+      const id = crypto.randomUUID();
+      this.db
+        .query("INSERT INTO notebooks (id, title, template, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+        .run(id, title, template, now, now);
+      const page = this.insertPage(id, -1, kind);
+      this.setCurrentPage(id, page.id);
+      return { notebook: this.notebook(id)!, page };
+    });
+  }
+
+  updateNotebook(id: string, patch: { title?: string; template?: Template }): boolean {
+    const nb = this.notebook(id);
+    if (!nb) return false;
+    this.db
+      .query("UPDATE notebooks SET title = ?, template = ? WHERE id = ?")
+      .run(patch.title ?? nb.title, patch.template ?? nb.template, id);
+    return true;
+  }
+
+  /** Delete a notebook with all its pages, strokes and history. */
+  deleteNotebook(id: string): void {
+    this.tx(() => {
+      this.db.query("DELETE FROM strokes WHERE page_id IN (SELECT id FROM pages WHERE notebook_id = ?)").run(id);
+      this.db.query("DELETE FROM ops WHERE notebook_id = ?").run(id);
+      this.db.query("DELETE FROM pages WHERE notebook_id = ?").run(id);
+      this.db.query("DELETE FROM notebooks WHERE id = ?").run(id);
     });
   }
 
   touchNotebook(id: string, now: number): void {
     this.db.query("UPDATE notebooks SET updated_at = ? WHERE id = ?").run(now, id);
+  }
+
+  /** The page the notebook was last on (or its first page). */
+  currentPage(notebookId: string): PageInfo | null {
+    const r = this.db
+      .query(
+        `SELECT ${PAGE_COLS} FROM pages WHERE notebook_id = ?1
+         ORDER BY id = (SELECT current_page FROM notebooks WHERE id = ?1) DESC, idx LIMIT 1`,
+      )
+      .get(notebookId) as PageRow | null;
+    return r && toPage(r);
+  }
+
+  setCurrentPage(notebookId: string, pageId: string): void {
+    this.db.query("UPDATE notebooks SET current_page = ? WHERE id = ?").run(pageId, notebookId);
+  }
+
+  // ------------------------------------------------------------ pages
+
+  /** Pages of a notebook, in order. */
+  pages(notebookId: string): PageInfo[] {
+    const rows = this.db
+      .query(`SELECT ${PAGE_COLS} FROM pages WHERE notebook_id = ? ORDER BY idx`)
+      .all(notebookId) as PageRow[];
+    return rows.map(toPage);
+  }
+
+  page(id: string): PageInfo | null {
+    const r = this.db.query(`SELECT ${PAGE_COLS} FROM pages WHERE id = ?`).get(id) as PageRow | null;
+    return r && toPage(r);
+  }
+
+  /** Insert an empty page after position `afterIdx` (-1 = at the start). */
+  insertPage(notebookId: string, afterIdx: number, kind: PageKind): PageInfo {
+    return this.tx(() => {
+      // Two steps: shifting in place could collide with a unique index on (notebook_id, idx) one day.
+      this.db.query("UPDATE pages SET idx = -(idx + 1) WHERE notebook_id = ? AND idx > ?").run(notebookId, afterIdx);
+      this.db.query("UPDATE pages SET idx = -idx WHERE notebook_id = ? AND idx < 0").run(notebookId);
+      const page: PageInfo = { id: crypto.randomUUID(), notebookId, kind, width: A4.width, height: A4.height };
+      this.db
+        .query("INSERT INTO pages (id, notebook_id, idx, kind, width, height) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(page.id, notebookId, afterIdx + 1, kind, page.width, page.height);
+      return page;
+    });
+  }
+
+  /** Position of a page in its notebook. */
+  pageIndex(id: string): number {
+    const r = this.db.query("SELECT idx FROM pages WHERE id = ?").get(id) as { idx: number } | null;
+    return r?.idx ?? -1;
+  }
+
+  setPageHeight(id: string, height: number): void {
+    this.db.query("UPDATE pages SET height = ? WHERE id = ?").run(height, id);
+  }
+
+  /** Delete a page, its strokes and the history entries that refer to it. */
+  deletePage(id: string): void {
+    this.tx(() => {
+      const page = this.page(id);
+      if (!page) return;
+      const idx = this.pageIndex(id);
+      this.db.query("DELETE FROM strokes WHERE page_id = ?").run(id);
+      this.db.query("DELETE FROM ops WHERE json_extract(payload, '$.pageId') = ?").run(id);
+      this.db.query("DELETE FROM pages WHERE id = ?").run(id);
+      this.db.query("UPDATE pages SET idx = idx - 1 WHERE notebook_id = ? AND idx > ?").run(page.notebookId, idx);
+    });
   }
 
   // ------------------------------------------------------------ strokes
@@ -178,6 +305,14 @@ export class Store {
       )
       .all(pageId) as StrokeRow[];
     return rows.map(toStroke);
+  }
+
+  /** Ids of a page's visible strokes. */
+  pageStrokeIds(pageId: string): string[] {
+    const rows = this.db.query("SELECT id FROM strokes WHERE page_id = ? AND deleted_at IS NULL").all(pageId) as {
+      id: string;
+    }[];
+    return rows.map((r) => r.id);
   }
 
   /** Strokes by id (deleted or not), oldest first. */
@@ -216,15 +351,17 @@ export class Store {
 
   /**
    * Soft-delete (`at` = timestamp) or restore (`at` = null) strokes.
-   * Returns the ids whose state actually changed.
+   * Returns the ids whose state actually changed. With `pageId`, only strokes of that page.
    */
-  setDeleted(ids: string[], at: number | null): string[] {
+  setDeleted(ids: string[], at: number | null, pageId?: string): string[] {
     const changed: string[] = [];
-    const where = at === null ? "deleted_at IS NOT NULL" : "deleted_at IS NULL";
+    let where = at === null ? "deleted_at IS NOT NULL" : "deleted_at IS NULL";
+    if (pageId !== undefined) where += " AND page_id = ?";
     for (const part of chunks(ids)) {
+      const args = pageId !== undefined ? [at, ...part, pageId] : [at, ...part];
       const rows = this.db
         .query(`UPDATE strokes SET deleted_at = ? WHERE id IN (${marks(part.length)}) AND ${where} RETURNING id`)
-        .all(at, ...part) as { id: string }[];
+        .all(...args) as { id: string }[];
       for (const r of rows) changed.push(r.id);
     }
     return changed;

@@ -1,8 +1,9 @@
 import { Connection, type ConnStatus } from "../shared/connection.ts";
 import { DEFAULT_INK, applyPressureCurve, type InkSettings } from "../shared/ink.ts";
-import type { AdbDevice, ClientInfo, HistoryState, PadUrls, ServerMsg } from "../shared/protocol.ts";
+import type { AdbDevice, ClientInfo, HistoryState, NotebookState, PadUrls, ServerMsg } from "../shared/protocol.ts";
 import { StripOverlay } from "./overlay.ts";
 import { PageView, type FitMode } from "./renderer.ts";
+import { Sidebar } from "./sidebar.ts";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -28,6 +29,8 @@ const view = new PageView($("#stage"));
 const strip = new StripOverlay(view, (rect) => {
   if (view.page) conn.send({ type: "viewport", pageId: view.page.id, rect });
 });
+const sidebar = new Sidebar($("#library"), (msg) => conn.send(msg));
+let notebook: NotebookState | null = null;
 
 // ------------------------------------------------------------------ connection
 
@@ -42,6 +45,7 @@ const STATUS: Record<ConnStatus, [string, string]> = {
 const conn = new Connection("viewer", {
   onStatus: (s) => {
     online = s === "open";
+    sidebar.setOnline(online);
     const [label, cls] = STATUS[s];
     const el = $("#server-status");
     el.replaceChildren(h("span", { class: `dot ${cls}` }), h("span", {}, label));
@@ -62,9 +66,19 @@ function handle(msg: ServerMsg) {
       renderPadStatus(msg.clients);
       break;
     case "snapshot":
-      view.setSnapshot(msg.page, msg.strokes);
+      view.setSnapshot(msg.page, msg.strokes, msg.notebook.template);
       strip.set(msg.viewport?.rect ?? null);
+      setNotebook(msg);
       renderObserved();
+      break;
+    case "notebook.state": {
+      const page = msg.pages.find((p) => p.id === view.page?.id);
+      if (page) view.updatePage(page, msg.notebook.template);
+      setNotebook(msg);
+      break;
+    }
+    case "notebooks":
+      sidebar.setNotebooks(msg.notebooks);
       break;
     case "viewport":
       if (msg.pageId === view.page?.id) strip.set(msg.rect);
@@ -80,13 +94,16 @@ function handle(msg: ServerMsg) {
       break;
     case "stroke.added":
       view.addStroke(msg.stroke);
+      sidebar.pageChanged(msg.stroke.pageId);
       renderObserved();
       break;
     case "strokes.removed":
       if (msg.pageId === view.page?.id) view.removeStrokes(msg.ids);
+      sidebar.pageChanged(msg.pageId);
       break;
     case "strokes.restored":
       view.restoreStrokes(msg.strokes);
+      for (const id of new Set(msg.strokes.map((s) => s.pageId))) sidebar.pageChanged(id);
       break;
     case "history":
       history = { canUndo: msg.canUndo, canRedo: msg.canRedo };
@@ -95,6 +112,7 @@ function handle(msg: ServerMsg) {
     case "settings":
       ink = msg.ink;
       view.setInk(ink);
+      sidebar.allChanged();
       renderInk();
       break;
     case "devices":
@@ -144,7 +162,52 @@ followBtn.addEventListener("click", () => {
 function renderHistory() {
   $<HTMLButtonElement>("#undo").disabled = !online || !history.canUndo;
   $<HTMLButtonElement>("#redo").disabled = !online || !history.canRedo;
+  renderPageNav();
 }
+
+// ------------------------------------------------------------------ notebook & pages
+
+function setNotebook(state: NotebookState) {
+  notebook = { notebook: state.notebook, pages: state.pages };
+  if (view.page) sidebar.setState(notebook, view.page.id);
+  $("#nb-name").textContent = state.notebook.title;
+  document.title = `${state.notebook.title} — note-taker`;
+  renderPageNav();
+}
+
+function pageIndex() {
+  return notebook?.pages.findIndex((p) => p.id === view.page?.id) ?? -1;
+}
+
+function renderPageNav() {
+  const i = pageIndex();
+  const n = notebook?.pages.length ?? 0;
+  $("#page-label").textContent = i >= 0 ? `${i + 1} / ${n}` : "–";
+  $<HTMLButtonElement>("#page-prev").disabled = !online || i <= 0;
+  $<HTMLButtonElement>("#page-next").disabled = !online || i < 0 || i >= n - 1;
+  $<HTMLButtonElement>("#page-new").disabled = !online || !view.page;
+}
+
+function gotoPage(delta: number) {
+  const p = notebook?.pages[pageIndex() + delta];
+  if (p) conn.send({ type: "page.goto", pageId: p.id });
+}
+function newPage() {
+  if (view.page) conn.send({ type: "page.new", afterPageId: view.page.id });
+}
+$("#page-prev").addEventListener("click", () => gotoPage(-1));
+$("#page-next").addEventListener("click", () => gotoPage(1));
+$("#page-new").addEventListener("click", newPage);
+
+const library = $("#library");
+const libraryBtn = $<HTMLButtonElement>("#library-toggle");
+function setLibrary(open: boolean) {
+  library.hidden = !open;
+  libraryBtn.setAttribute("aria-pressed", String(open));
+  storageSet("note-taker.viewer.library", open ? "1" : "0");
+}
+setLibrary(storageGet("note-taker.viewer.library") !== "0");
+libraryBtn.addEventListener("click", () => setLibrary(Boolean(library.hidden)));
 $("#undo").addEventListener("click", () => conn.send({ type: "undo" }));
 $("#redo").addEventListener("click", () => conn.send({ type: "redo" }));
 
@@ -168,7 +231,8 @@ panelBtn.addEventListener("click", () => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.target instanceof HTMLInputElement) return;
+  const t = e.target;
+  if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement) return;
   const mod = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
   if (mod && !e.altKey && (key === "z" || key === "y")) {
@@ -176,8 +240,17 @@ document.addEventListener("keydown", (e) => {
     conn.send({ type: key === "y" || e.shiftKey ? "redo" : "undo" });
     return;
   }
+  if (e.key === "PageUp" || e.key === "PageDown") {
+    e.preventDefault();
+    if (e.altKey) return;
+    // Ctrl/Shift+PageDown on the last page adds one.
+    if (e.key === "PageDown" && (mod || e.shiftKey) && pageIndex() === (notebook?.pages.length ?? 0) - 1) newPage();
+    else gotoPage(e.key === "PageUp" ? -1 : 1);
+    return;
+  }
   if (mod || e.altKey) return;
   if (key === "f") setFit(view.fit === "width" ? "page" : "width");
+  if (key === "b") setLibrary(Boolean(library.hidden));
 });
 
 function renderPadStatus(clients: ClientInfo[]) {
