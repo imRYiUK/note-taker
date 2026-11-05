@@ -15,41 +15,112 @@
         display: flex;
         flex-direction: column;
       }
+
+      /* ---- header: a floating clay bar */
       header {
+        position: relative;
+        z-index: 2;
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 8px 16px;
-        border-bottom: 1px solid var(--border);
+        gap: 6px;
+        margin: 12px 12px 0;
+        padding: 8px 10px;
         background: var(--surface);
+        border: var(--bw) solid var(--line);
+        border-radius: 20px;
+        box-shadow: var(--shadow);
         flex: none;
         flex-wrap: wrap;
       }
       header button {
-        padding: 5px 11px;
+        padding: 6px 11px;
         font-size: 13px;
       }
-      header button[aria-pressed="true"] {
-        border-color: var(--accent);
-        color: var(--accent);
+      header button.square {
+        width: 36px;
+        height: 34px;
+        padding: 0;
+      }
+      header button .ico,
+      header button i[data-icon] {
+        width: 17px;
+        height: 17px;
+      }
+      .brand {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        background: var(--brand);
+        border: var(--bw) solid var(--line);
+        flex: none;
+        /* A sticker, not a button. */
+        transform: rotate(-7deg);
+      }
+      .brand .ico,
+      .brand i[data-icon] {
+        width: 20px;
+        height: 20px;
+      }
+      header h1 {
+        font-size: 19px;
+        margin: 0;
+        font-weight: 600;
+        letter-spacing: 0.005em;
+      }
+      header h1#nb-name {
+        max-width: 26ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .sep {
-        width: 1px;
+        width: 2px;
         align-self: stretch;
         background: var(--border);
+        border-radius: 2px;
         margin: 2px 4px;
       }
-      #pad-status {
+      .pagenav {
         display: flex;
         align-items: center;
-        gap: 8px;
-        font-size: 13px;
-        color: var(--muted);
+        gap: 6px;
       }
+      #page-label {
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 700;
+        min-width: 58px;
+        text-align: center;
+        padding: 4px 8px;
+        border: var(--bw-sm) solid var(--line);
+        border-radius: 99px;
+        background: var(--well);
+        font-variant-numeric: tabular-nums;
+      }
+      /* Connection chips. */
+      #pad-status,
+      #server-status {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 11px;
+        border: var(--bw-sm) solid var(--line);
+        border-radius: 99px;
+        background: var(--well);
+        font-size: 12.5px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      /* ---- layout: library | stage | panel */
       #layout {
         flex: 1;
         min-height: 0;
         display: flex;
+        gap: 14px;
+        padding: 14px 12px 12px;
       }
       #stage {
         flex: 1;
@@ -57,13 +128,20 @@
         overflow: auto;
         scrollbar-gutter: stable;
         padding: 24px;
+        border-radius: 20px;
+        /* A dotted desk under the paper. */
+        background-color: #fdf1e8;
+        background-image: radial-gradient(circle, #ecd9cb 1.3px, transparent 1.5px);
+        background-size: 22px 22px;
+        border: var(--bw-sm) dashed #e3c9b8;
       }
       .page {
         position: relative;
         margin: 0 auto;
+        /* Outline + offset shadow without changing the page box (overlay coordinates). */
         box-shadow:
-          0 1px 3px rgba(0, 0, 0, 0.25),
-          0 8px 30px rgba(0, 0, 0, 0.18);
+          0 0 0 var(--bw) var(--line),
+          6px 6px 0 var(--bw) var(--line);
       }
       .page canvas {
         position: absolute;
@@ -97,74 +175,13 @@
         border: 2px solid currentColor;
         box-shadow: 0 0 0 1.5px #fff;
       }
-      /* Latency HUD (hud.ts, Ctrl+Shift+L). */
-      #hud {
-        position: fixed;
-        right: 16px;
-        bottom: 16px;
-        z-index: 10;
-        padding: 10px 12px;
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        background: color-mix(in srgb, var(--surface) 94%, transparent);
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
-        font-size: 12px;
-        min-width: 360px;
-      }
-      #hud[hidden] {
-        display: none;
-      }
-      #hud .hud-head {
-        display: flex;
-        gap: 6px;
-        align-items: center;
-        margin-bottom: 6px;
-      }
-      #hud .hud-head b {
-        flex: 1;
-      }
-      #hud button {
-        padding: 2px 8px;
-        font-size: 11px;
-      }
-      #hud table {
-        border-collapse: collapse;
-        width: 100%;
-      }
-      #hud th,
-      #hud td {
-        padding: 3px 6px;
-        text-align: right;
-        font-family: var(--mono);
-        font-variant-numeric: tabular-nums;
-      }
-      #hud th:first-child,
-      #hud td:first-child {
-        text-align: left;
-        font-family: var(--sans);
-      }
-      #hud th {
-        color: var(--muted);
-        font-weight: 500;
-        border-bottom: 1px solid var(--border);
-      }
-      #hud td.na {
-        text-align: center;
-        color: var(--muted);
-      }
-      #hud .hud-meta {
-        margin-top: 6px;
-        color: var(--muted);
-        font-family: var(--mono);
-        font-size: 11px;
-      }
       /* The pad's zoom strip (overlay.ts). */
       .page .strip {
         position: absolute;
         box-sizing: border-box;
-        border: 2px solid var(--accent);
-        border-radius: 4px;
-        background: color-mix(in srgb, var(--accent) 7%, transparent);
+        border: var(--bw) solid var(--accent);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--green) 9%, transparent);
         cursor: grab;
         touch-action: none;
         transition:
@@ -180,16 +197,57 @@
       .page .strip.dragging {
         cursor: grabbing;
       }
+
+      /* ---- cards */
+      section {
+        background: var(--surface);
+        border: var(--bw) solid var(--line);
+        border-radius: 20px;
+        box-shadow: var(--shadow);
+        padding: 16px 18px;
+        min-width: 0;
+      }
+      h2 {
+        font-size: 17px;
+        font-weight: 600;
+        color: var(--text);
+        margin: 0 0 12px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      #panel section > h2::before {
+        content: "";
+        width: 14px;
+        height: 14px;
+        flex: none;
+        border-radius: 5px;
+        border: var(--bw-sm) solid var(--line);
+        background: var(--peach);
+      }
+      #panel section:nth-of-type(5n + 2) > h2::before {
+        background: var(--sky);
+      }
+      #panel section:nth-of-type(5n + 3) > h2::before {
+        background: var(--lilac);
+      }
+      #panel section:nth-of-type(5n + 4) > h2::before {
+        background: var(--mint);
+      }
+      #panel section:nth-of-type(5n + 5) > h2::before {
+        background: var(--green);
+      }
+
+      /* ---- right panel: connection, devices, ink */
       #panel {
         width: 400px;
         max-width: 100%;
         flex: none;
         overflow: auto;
-        border-left: 1px solid var(--border);
-        background: var(--bg);
-        padding: 16px;
+        /* Room for the cards' offset shadows inside the scroller. */
+        padding: 2px 10px 12px 2px;
         display: grid;
-        gap: 14px;
+        gap: 16px;
         align-content: start;
       }
       #panel[hidden] {
@@ -198,10 +256,11 @@
       .slider {
         display: grid;
         grid-template-columns: 1fr auto;
-        gap: 4px 10px;
+        gap: 6px 10px;
         align-items: center;
         font-size: 14px;
-        margin-bottom: 10px;
+        font-weight: 600;
+        margin-bottom: 12px;
       }
       .slider input {
         grid-column: 1 / -1;
@@ -210,62 +269,42 @@
       .slider output {
         font-family: var(--mono);
         font-size: 12px;
-        color: var(--muted);
+        font-weight: 700;
+        padding: 1px 8px;
+        border-radius: 99px;
+        background: var(--lilac);
+        border: var(--bw-sm) solid var(--line);
       }
       .hint {
-        font-size: 12px;
+        font-size: 12.5px;
         color: var(--muted);
-        line-height: 1.45;
-        margin: 0 0 8px;
+        line-height: 1.5;
+        margin: 0 0 10px;
       }
       #curve {
         width: 100%;
         height: 90px;
         display: block;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        background: var(--bg);
-        margin-bottom: 10px;
-      }
-      header h1 {
-        font-size: 16px;
-        margin: 0;
-        font-weight: 650;
-        letter-spacing: 0.01em;
-      }
-      #server-status {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        color: var(--muted);
-        font-size: 13px;
-      }
-      section {
-        background: var(--surface);
-        border: 1px solid var(--border);
+        border: var(--bw-sm) solid var(--line);
         border-radius: 12px;
-        padding: 16px 18px;
-        min-width: 0;
-      }
-      h2 {
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--muted);
-        margin: 0 0 12px;
-        font-weight: 600;
+        background: var(--well);
+        margin-bottom: 12px;
       }
       ol.steps {
         margin: 0;
-        padding-left: 20px;
+        padding-left: 22px;
         line-height: 1.6;
         font-size: 14px;
+      }
+      ol.steps li::marker {
+        font-family: var(--display);
+        font-weight: 600;
       }
       .url {
         display: flex;
         gap: 8px;
         align-items: center;
-        margin: 6px 0;
+        margin: 8px 0;
         min-width: 0;
       }
       .url code {
@@ -274,32 +313,41 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 6px 8px;
+        background: var(--well);
+        border: var(--bw-sm) solid var(--line);
+        border-radius: var(--r-sm);
+        padding: 6px 9px;
       }
       .url button {
         padding: 5px 10px;
         font-size: 12px;
       }
+      .url.selected code {
+        border-color: var(--accent);
+        background: #dcfce7;
+      }
+      .url .warn {
+        color: var(--warn);
+        display: inline-flex;
+      }
       .label {
         font-size: 12px;
+        font-weight: 700;
         color: var(--muted);
-        margin-top: 12px;
+        margin-top: 14px;
       }
       .list {
         display: grid;
-        gap: 8px;
+        gap: 10px;
       }
       .row {
         display: flex;
         align-items: center;
         gap: 10px;
         padding: 10px 12px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: var(--bg);
+        border: var(--bw-sm) solid var(--line);
+        border-radius: 14px;
+        background: var(--well);
         font-size: 14px;
         flex-wrap: wrap;
       }
@@ -323,10 +371,13 @@
       }
       .badge {
         font-size: 11px;
-        padding: 2px 7px;
+        font-weight: 800;
+        letter-spacing: 0.03em;
+        padding: 1px 8px;
         border-radius: 99px;
-        border: 1px solid var(--border);
-        color: var(--muted);
+        border: var(--bw-sm) solid var(--line);
+        background: var(--sky);
+        color: var(--text);
       }
       #probe table {
         width: 100%;
@@ -334,12 +385,12 @@
         font-size: 14px;
       }
       #probe td {
-        padding: 6px 4px;
-        border-bottom: 1px solid var(--border);
+        padding: 7px 4px;
+        border-bottom: var(--bw-sm) solid var(--border);
         vertical-align: top;
       }
       #probe td:first-child {
-        width: 1.4em;
+        width: 1.6em;
       }
       #probe td.v {
         text-align: right;
@@ -348,41 +399,45 @@
         font-size: 12px;
       }
       .pass {
-        color: var(--ok);
+        color: var(--accent-text);
       }
       .fail {
         color: var(--bad);
       }
-      /* ---- header page navigation */
-      header h1#nb-name {
-        max-width: 26ch;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .pagenav {
+      #lan-qr {
         display: flex;
+        gap: 14px;
         align-items: center;
-        gap: 4px;
+        margin: 8px 0 12px;
       }
-      #page-label {
-        font-family: var(--mono);
-        font-size: 12px;
-        color: var(--muted);
-        min-width: 52px;
-        text-align: center;
+      #lan-qr[hidden] {
+        display: none;
       }
+      #lan-qr svg {
+        width: 168px;
+        height: 168px;
+        flex: none;
+        border: var(--bw) solid var(--line);
+        border-radius: 14px;
+        box-shadow: var(--shadow-sm);
+      }
+      #lan-qr .hint {
+        margin: 0;
+      }
+
       /* ---- library sidebar */
       #library {
-        width: 250px;
+        width: 262px;
         flex: none;
         overflow: auto;
-        border-right: 1px solid var(--border);
         background: var(--surface);
-        padding: 12px;
+        border: var(--bw) solid var(--line);
+        border-radius: 20px;
+        box-shadow: var(--shadow);
+        padding: 14px;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 10px;
       }
       #library[hidden] {
         display: none;
@@ -405,16 +460,16 @@
       .lib-head select,
       #nb-new button,
       #nb-new select {
-        padding: 4px 8px;
+        padding: 4px 9px;
         font-size: 12px;
       }
       #nb-new {
         display: grid;
-        gap: 6px;
-        padding: 8px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: var(--bg);
+        gap: 8px;
+        padding: 10px;
+        border: var(--bw-sm) solid var(--line);
+        border-radius: 14px;
+        background: var(--well);
       }
       #nb-new[hidden] {
         display: none;
@@ -422,14 +477,8 @@
       #nb-new input,
       .nb input.rename {
         width: 100%;
-        box-sizing: border-box;
-        padding: 5px 7px;
-        font: inherit;
+        padding: 6px 9px;
         font-size: 13px;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        background: var(--surface);
-        color: var(--text);
       }
       .choices {
         display: flex;
@@ -441,176 +490,298 @@
       }
       #nb-list {
         display: grid;
-        gap: 2px;
+        gap: 4px;
       }
       .nb {
         display: flex;
         align-items: center;
         gap: 2px;
-        border-radius: 7px;
+        border-radius: 12px;
         padding: 2px;
+        border: var(--bw-sm) solid transparent;
       }
       .nb.active {
-        background: color-mix(in srgb, var(--accent) 14%, transparent);
+        background: var(--brand);
+        border-color: var(--line);
       }
-      .nb-open {
+      button.nb-open {
         flex: 1;
         min-width: 0;
         display: grid;
+        justify-content: stretch;
         text-align: left;
         border: 0;
+        box-shadow: none;
         background: transparent;
-        padding: 5px 6px;
-        border-radius: 6px;
+        padding: 5px 7px;
+        border-radius: 9px;
+        font-weight: 400;
       }
-      .nb-open:hover {
-        background: color-mix(in srgb, var(--text) 6%, transparent);
+      button.nb-open:hover:not(:disabled),
+      button.nb-open:active:not(:disabled) {
+        transform: none;
+        box-shadow: none;
+        background: color-mix(in srgb, var(--text) 7%, transparent);
       }
       .nb-title {
-        font-size: 13px;
-        font-weight: 550;
+        font-size: 14px;
+        font-weight: 750;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .nb-meta {
-        font-size: 11px;
+        font-size: 11.5px;
         color: var(--muted);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .nb.active .nb-meta {
+        color: var(--text);
       }
       .nb-actions {
         display: none;
         gap: 2px;
       }
       .nb:hover .nb-actions,
+      .nb:focus-within .nb-actions,
       .nb.active .nb-actions,
       .nb-actions:has(.armed) {
         display: flex;
       }
       button.icon {
         border: 0;
+        box-shadow: none;
         background: transparent;
-        padding: 3px 6px;
-        font-size: 13px;
-        border-radius: 5px;
-        color: var(--muted);
-      }
-      button.icon:hover {
+        padding: 5px;
+        border-radius: 8px;
         color: var(--text);
-        background: color-mix(in srgb, var(--text) 8%, transparent);
       }
-      button.icon.armed {
+      button.icon .ico {
+        width: 16px;
+        height: 16px;
+      }
+      button.icon:hover:not(:disabled),
+      button.icon:active:not(:disabled) {
+        transform: none;
+        box-shadow: none;
+        background: color-mix(in srgb, var(--text) 10%, transparent);
+      }
+      button.icon.armed,
+      button.icon.armed:hover:not(:disabled) {
         color: #fff;
         background: var(--bad);
         font-size: 11px;
+        padding: 3px 8px;
       }
       #thumbs {
         display: grid;
         grid-template-columns: repeat(2, 1fr);
-        gap: 10px;
+        gap: 14px 12px;
         align-items: start;
-        padding-bottom: 8px;
+        padding: 2px 6px 10px 2px;
       }
       .thumb {
         position: relative;
         cursor: pointer;
-        border-radius: 4px;
-        outline: 2px solid transparent;
-        outline-offset: 2px;
+        border-radius: 8px;
+        outline: 3px solid transparent;
+        outline-offset: 3px;
+        transition: transform var(--dur) var(--ease-soft);
+      }
+      .thumb:hover {
+        transform: translate(-1px, -1px);
       }
       .thumb img {
         display: block;
         width: 100%;
         background: #fff;
-        border-radius: 3px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        border: var(--bw-sm) solid var(--line);
+        border-radius: 8px;
+        box-shadow: 3px 3px 0 var(--line);
       }
       .thumb.active {
         outline-color: var(--accent);
       }
-      .thumb .num {
-        position: absolute;
-        left: 4px;
-        bottom: 4px;
-        font-size: 10px;
-        font-family: var(--mono);
-        padding: 0 4px;
-        border-radius: 3px;
-        background: rgba(0, 0, 0, 0.55);
-        color: #fff;
-      }
+      .thumb .num,
       .thumb .kind {
         position: absolute;
-        right: 4px;
-        bottom: 4px;
-        font-size: 11px;
-        padding: 0 4px;
-        border-radius: 3px;
-        background: rgba(0, 0, 0, 0.55);
+        bottom: 6px;
+        display: inline-flex;
+        align-items: center;
+        font-size: 10.5px;
+        font-weight: 800;
+        font-family: var(--mono);
+        padding: 1px 6px;
+        border-radius: 6px;
+        background: var(--line);
         color: #fff;
+      }
+      .thumb .num {
+        left: 6px;
+      }
+      .thumb .kind {
+        right: 6px;
+        padding: 2px 5px;
+      }
+      .thumb .kind .ico {
+        width: 12px;
+        height: 12px;
       }
       .thumb button.icon {
         position: absolute;
-        top: 2px;
-        right: 2px;
+        top: 5px;
+        right: 5px;
         display: none;
-        background: rgba(0, 0, 0, 0.55);
-        color: #fff;
+        background: var(--surface);
+        border: var(--bw-sm) solid var(--line);
       }
       .thumb:hover button.icon,
+      .thumb:focus-within button.icon,
       .thumb button.icon.armed {
-        display: block;
+        display: inline-flex;
       }
-      .thumb.add {
+      .thumb button.icon:hover:not(:disabled) {
+        background: #fee2e2;
+      }
+      button.thumb.add {
         aspect-ratio: 2100 / 2970;
-        border: 1.5px dashed var(--border);
+        border: var(--bw-sm) dashed var(--muted);
+        box-shadow: none;
         background: transparent;
-        font-size: 22px;
         color: var(--muted);
       }
-      .thumb.add:hover {
-        border-color: var(--accent);
-        color: var(--accent);
+      button.thumb.add .ico {
+        width: 26px;
+        height: 26px;
       }
+      button.thumb.add:hover:not(:disabled) {
+        transform: none;
+        box-shadow: none;
+        border-color: var(--accent);
+        color: var(--accent-text);
+        background: #dcfce7;
+      }
+
+      /* ---- latency HUD (hud.ts, Ctrl+Shift+L) */
+      #hud {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 10;
+        padding: 12px 14px;
+        background: var(--surface);
+        border: var(--bw) solid var(--line);
+        border-radius: var(--r);
+        box-shadow: var(--shadow);
+        font-size: 12px;
+        min-width: 360px;
+      }
+      #hud[hidden] {
+        display: none;
+      }
+      #hud .hud-head {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      #hud .hud-head b {
+        flex: 1;
+        font-family: var(--display);
+        font-size: 15px;
+        font-weight: 600;
+      }
+      #hud button {
+        padding: 2px 9px;
+        font-size: 11px;
+      }
+      #hud table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+      #hud th,
+      #hud td {
+        padding: 3px 6px;
+        text-align: right;
+        font-family: var(--mono);
+        font-variant-numeric: tabular-nums;
+      }
+      #hud th:first-child,
+      #hud td:first-child {
+        text-align: left;
+        font-family: var(--sans);
+      }
+      #hud th {
+        color: var(--muted);
+        font-weight: 700;
+        border-bottom: var(--bw-sm) solid var(--border);
+      }
+      #hud td.na {
+        text-align: center;
+        color: var(--muted);
+      }
+      #hud .hud-meta {
+        margin-top: 8px;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      /* ---- toast */
       #toast {
         position: fixed;
-        bottom: 16px;
+        bottom: 20px;
         left: 50%;
         transform: translateX(-50%);
-        background: var(--surface);
-        border: 1px solid var(--bad);
-        border-radius: 8px;
-        padding: 8px 14px;
-        font-size: 13px;
+        z-index: 20;
+        background: #fee2e2;
+        border: var(--bw) solid var(--line);
+        border-radius: var(--r);
+        box-shadow: var(--shadow);
+        padding: 10px 16px;
+        font-size: 14px;
+        font-weight: 700;
         display: none;
       }
       #toast.info {
-        border-color: var(--border);
+        background: var(--surface);
       }
+
+      /* ---- export dialog */
       #export {
         background: var(--surface);
         color: inherit;
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 18px 20px;
-        width: min(380px, calc(100vw - 32px));
+        border: var(--bw) solid var(--line);
+        border-radius: var(--r-lg);
+        box-shadow: 8px 8px 0 var(--line);
+        padding: 20px 22px;
+        width: min(400px, calc(100vw - 32px));
       }
       #export::backdrop {
-        background: rgb(0 0 0 / 0.45);
+        background: rgb(45 55 72 / 0.5);
+      }
+      #export section {
+        background: none;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        padding: 0;
       }
       #export h2 {
-        margin: 0 0 4px;
-        font-size: 15px;
+        margin: 0 0 2px;
+        font-size: 18px;
       }
       #export section + section {
-        margin-top: 16px;
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: var(--bw-sm) dashed var(--border);
       }
       #export .sub {
         color: var(--muted);
-        font-size: 12px;
-        margin-bottom: 8px;
+        font-size: 12.5px;
+        margin-bottom: 10px;
       }
       #export .choices {
         display: flex;
@@ -618,12 +789,15 @@
         flex-wrap: wrap;
         align-items: center;
       }
+      #export .choices > * {
+        flex: none;
+      }
       #export label {
         font-size: 13px;
         display: flex;
-        gap: 6px;
+        gap: 8px;
         align-items: center;
-        margin-top: 8px;
+        margin-top: 10px;
       }
       #export label[hidden] {
         display: none;
@@ -631,79 +805,64 @@
       #export .foot {
         display: flex;
         justify-content: flex-end;
-        margin-top: 18px;
-      }
-      #lan-qr {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-        margin: 8px 0;
-      }
-      #lan-qr[hidden] {
-        display: none;
-      }
-      #lan-qr svg {
-        width: 168px;
-        height: 168px;
-        flex: none;
-        border-radius: 6px;
-      }
-      #lan-qr .hint {
-        margin: 0;
-      }
-      .url.selected code {
-        border-color: var(--accent);
-      }
-      .url .warn {
-        color: var(--warn);
-        font-size: 12px;
+        margin-top: 20px;
       }
     </style>
   </head>
   <body>
     <header>
-      <button id="library-toggle" type="button" aria-pressed="true" title="Notebooks and pages (B)">☰</button>
+      <button id="library-toggle" class="square" type="button" aria-pressed="true" aria-label="Notebooks and pages" title="Notebooks and pages (B)">
+        <i data-icon="sidebar-simple"></i>
+      </button>
+      <span class="brand" aria-hidden="true"><i data-icon="notebook"></i></span>
       <h1 id="nb-name">note-taker</h1>
       <div class="pagenav">
-        <button id="page-prev" type="button" title="Previous page (PageUp)" disabled>‹</button>
+        <button id="page-prev" class="square" type="button" aria-label="Previous page" title="Previous page (PageUp)" disabled>
+          <i data-icon="caret-left"></i>
+        </button>
         <span id="page-label">–</span>
-        <button id="page-next" type="button" title="Next page (PageDown)" disabled>›</button>
-        <button id="page-new" type="button" title="New page after this one (Ctrl+PageDown on the last page)" disabled>＋ Page</button>
+        <button id="page-next" class="square" type="button" aria-label="Next page" title="Next page (PageDown)" disabled>
+          <i data-icon="caret-right"></i>
+        </button>
+        <button id="page-new" type="button" title="New page after this one (Ctrl+PageDown on the last page)" disabled>
+          <i data-icon="file-plus"></i>Page
+        </button>
       </div>
       <div class="sep"></div>
-      <button id="fit" type="button" title="Toggle fit width / whole page (F)">Fit: width</button>
-      <button id="follow" type="button" aria-pressed="true" title="Scroll to keep the pen in view">Follow pen</button>
-      <button id="undo" type="button" title="Undo (Ctrl+Z)" disabled>Undo</button>
-      <button id="redo" type="button" title="Redo (Ctrl+Shift+Z)" disabled>Redo</button>
-      <button id="clear" type="button" title="Remove all strokes from this page (undoable)">Clear page</button>
-      <button id="export-btn" type="button" title="Export PDF / SVG / PNG (Ctrl+E)">Export</button>
+      <button id="fit" type="button" title="Toggle fit width / whole page (F)"><i data-icon="frame-corners"></i><span class="txt">Fit: width</span></button>
+      <button id="follow" type="button" aria-pressed="true" title="Scroll to keep the pen in view"><i data-icon="crosshair"></i>Follow pen</button>
+      <button id="undo" class="square" type="button" aria-label="Undo" title="Undo (Ctrl+Z)" disabled><i data-icon="arrow-u-up-left"></i></button>
+      <button id="redo" class="square" type="button" aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled><i data-icon="arrow-u-up-right"></i></button>
+      <button id="clear" type="button" title="Remove all strokes from this page (undoable)"><i data-icon="broom"></i>Clear page</button>
+      <button id="export-btn" class="primary" type="button" title="Export PDF / SVG / PNG (Ctrl+E)"><i data-icon="export"></i>Export</button>
       <span style="margin-left: auto"></span>
       <div id="pad-status"><span class="dot"></span><span>no pad</span></div>
-      <div class="sep"></div>
       <div id="server-status"><span class="dot"></span><span>connecting…</span></div>
-      <button id="panel-toggle" type="button" aria-pressed="true" title="Connection, devices and ink settings">Panel</button>
+      <button id="panel-toggle" type="button" aria-pressed="true" title="Connection, devices and ink settings">
+        <i data-icon="sliders-horizontal"></i>Panel
+      </button>
     </header>
     <div id="layout">
       <aside id="library">
         <div class="lib-head">
           <h2>Notebooks</h2>
-          <button id="nb-new-btn" type="button" title="New notebook">＋ New</button>
+          <button id="nb-new-btn" type="button" title="New notebook"><i data-icon="plus"></i>New</button>
         </div>
         <form id="nb-new" hidden autocomplete="off">
-          <input name="title" type="text" placeholder="Notebook title" maxlength="120" required />
+          <input name="title" type="text" placeholder="Notebook title" aria-label="Notebook title" maxlength="120" required />
           <div class="choices">
-            <select name="template" title="Page background"></select>
-            <select name="kind" title="Page size"></select>
+            <select name="template" title="Page background" aria-label="Page background"></select>
+            <select name="kind" title="Page size" aria-label="Page size"></select>
           </div>
           <div class="choices">
-            <button type="submit">Create</button>
+            <button type="submit" class="primary">Create</button>
             <button id="nb-new-cancel" type="button">Cancel</button>
           </div>
         </form>
         <div id="nb-list"></div>
         <div class="lib-head">
           <h2 id="pages-title">Pages</h2>
-          <select id="nb-template" title="Background of every page in this notebook"></select>
+          <select id="nb-template" title="Background of every page in this notebook" aria-label="Page background"></select>
         </div>
         <div id="thumbs"></div>
       </aside>
@@ -727,7 +886,7 @@
           </div>
           <div class="url">
             <span class="hint" style="flex: 1; margin: 0">Pen → PC latency, per stage (Ctrl+Shift+L).</span>
-            <button id="hud-toggle" type="button">Latency HUD</button>
+            <button id="hud-toggle" type="button"><i data-icon="gauge"></i>Latency HUD</button>
           </div>
         </section>
 
@@ -764,12 +923,12 @@
       </aside>
     </div>
     <div id="hud" hidden></div>
-    <div id="toast"></div>
-    <dialog id="export">
+    <div id="toast" role="status" aria-live="polite"></div>
+    <dialog id="export" aria-label="Export">
       <section>
         <h2>Notebook</h2>
         <div class="sub" id="ex-nb-title"></div>
-        <div class="choices"><button id="ex-nb-pdf" type="button">PDF (vector)</button></div>
+        <div class="choices"><button id="ex-nb-pdf" class="primary" type="button">PDF (vector)</button></div>
         <label><input id="ex-split" type="checkbox" /> Cut endless pages into A4 sheets (for printing)</label>
       </section>
       <section>
@@ -779,7 +938,7 @@
           <button id="ex-page-pdf" type="button">PDF</button>
           <button id="ex-page-svg" type="button">SVG</button>
           <button id="ex-page-png" type="button">PNG</button>
-          <select id="ex-dpi" title="PNG resolution">
+          <select id="ex-dpi" title="PNG resolution" aria-label="PNG resolution">
             <option value="100">100 dpi</option>
             <option value="200" selected>200 dpi</option>
             <option value="300">300 dpi</option>

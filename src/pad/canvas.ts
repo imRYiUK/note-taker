@@ -23,7 +23,7 @@ import type { PageInfo, StrokeData, Template, Tool } from "../shared/protocol.ts
 import { drawTemplate } from "../shared/templates.ts";
 
 const MARGIN = 10; // CSS px around the page in tablet mapping
-const SURROUND = "#121214";
+const SURROUND = "#e8e4f8"; // lilac desk around the page (pad/index.html body)
 const PAPER = "#ffffff";
 const BLANK = "#000000";
 const BLANK_EDGE = "#2a2a30";

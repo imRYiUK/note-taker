@@ -35,8 +35,11 @@ import { Strip, ZOOM_LIMITS, lerpRect } from "../shared/strip.ts";
 import { LINED } from "../shared/templates.ts";
 import { PadCanvas } from "./canvas.ts";
 import { Gestures } from "./gestures.ts";
+import { hydrateIcons, icon, type IconName } from "../shared/icons.ts";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
+
+hydrateIcons();
 
 const pad = new PadCanvas($<HTMLCanvasElement>("#ink"));
 
@@ -382,7 +385,7 @@ const savePrefs = () => saveJson(PREFS_KEY, prefs);
 let tool: PadTool = "pen";
 /** The ink tool the palette edits and the eraser returns to. */
 let inkTool: InkTool = "pen";
-const TOOL_ICON: Record<PadTool, string> = { pen: "✎", highlighter: "🖍", eraser: "⌫" };
+const TOOL_ICON: Record<PadTool, IconName> = { pen: "pencil-simple", highlighter: "highlighter", eraser: "eraser" };
 const ERASER_COLOR = "#d2413a";
 
 function setTool(t: PadTool) {
@@ -419,7 +422,10 @@ $("#style").addEventListener("click", () => {
 
 function togglePalette(open = palette.hidden): void {
   palette.hidden = !open;
-  if (open) renderPalette();
+  if (!open) return;
+  // Just under the toolbar, however many rows it wrapped into (portrait).
+  palette.style.top = `${Math.round($("#toolbar").getBoundingClientRect().bottom) + 12}px`;
+  renderPalette();
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...kids: Node[]) {
@@ -494,7 +500,10 @@ $<HTMLInputElement>("#autohide").addEventListener("change", (e) => {
 function renderStyle(): void {
   const color = tool === "eraser" ? ERASER_COLOR : style().color;
   for (const sel of ["#style .swatch", "#tb-handle .swatch"]) $(sel).style.color = color;
-  $("#tb-handle-tool").textContent = TOOL_ICON[tool];
+  const handleTool = $("#tb-handle-tool");
+  if (handleTool.firstElementChild?.getAttribute("data-icon") !== TOOL_ICON[tool]) {
+    handleTool.replaceChildren(icon(TOOL_ICON[tool]));
+  }
 }
 
 // ---- auto-hide: the toolbar collapses to a small handle while writing

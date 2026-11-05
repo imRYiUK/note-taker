@@ -1,45 +1,104 @@
-:root {
-  color-scheme: light dark;
-  --bg: #f6f5f1;
-  --surface: #ffffff;
-  --text: #1d1d1f;
-  --muted: #6b6b70;
-  --border: #e2e0da;
-  --accent: #2f6fde;
-  --ok: #1f9d55;
-  --warn: #c98a00;
-  --bad: #d2413a;
-  --ink: #1b2a4a;
-  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+/*
+ * Design system: "Educational Platform" claymorphism (ui-ux-pro-max skill,
+ * uupm.cc/demo/educational-platform). Pastel fills, thick ink outlines, hard
+ * offset shadows, chunky radii, Fredoka headings over Nunito body text.
+ * Tokens and rules: design-system/note-taker/MASTER.md.
+ *
+ * Light only: the style avoids dark mode. [data-theme="dark"] stays for the
+ * S Pen probe, which draws light ink on a dark canvas.
+ */
+
+@font-face {
+  font-family: "Fredoka";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 300 700;
+  src: url("./fonts/fredoka-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #121214;
-    --surface: #1c1c1f;
-    --text: #ececef;
-    --muted: #9a9aa2;
-    --border: #2c2c31;
-    --accent: #6c9cff;
-    --ok: #3ccb7f;
-    --warn: #e6b23a;
-    --bad: #ff6b63;
-    --ink: #e8ecf5;
-  }
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 1000;
+  src: url("./fonts/nunito-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  color-scheme: light;
+
+  /* palette */
+  --peach: #fdbcb4;
+  --sky: #add8e6;
+  --lilac: #e6e6fa;
+  --mint: #98ff98;
+  --green: #22c55e;
+
+  /* semantic roles */
+  --bg: #fff9f5; /* cream app background */
+  --surface: #ffffff; /* cards, controls */
+  --well: #fff9f5; /* inset areas inside cards */
+  --text: #2d3748;
+  --muted: #64748b; /* 4.5:1 on white and cream */
+  --line: #2d3748; /* outlines + hard shadows */
+  --border: #e2e8f0; /* hairline dividers, chart grid */
+  --brand: var(--peach);
+  --toggle: var(--sky); /* pressed toggles, selection */
+  --cta: var(--green); /* the one primary action per surface */
+  --on-cta: #2d3748; /* white on #22c55e is 2.3:1, ink is 5.3:1 */
+  --accent: #16a34a; /* non-text emphasis on white (3.3:1) */
+  --accent-text: #15803d; /* green text on white (5:1) */
+  --ok: #16a34a;
+  --warn: #d97706;
+  --bad: #dc2626;
+  --focus: #2563eb;
+  --ink: #2d3748;
+
+  /* shape + depth */
+  --bw: 3px;
+  --bw-sm: 2px;
+  --r-sm: 10px;
+  --r: 16px;
+  --r-lg: 24px;
+  --clay-inset: inset 0 -4px 0 rgb(0 0 0 / 0.1);
+  --shadow: 6px 6px 0 var(--line), var(--clay-inset);
+  --shadow-sm: 3px 3px 0 var(--line), inset 0 -3px 0 rgb(0 0 0 / 0.08);
+  --shadow-sm-hover: 2px 2px 0 var(--line), inset 0 -3px 0 rgb(0 0 0 / 0.08);
+  --shadow-sm-pressed: 0 0 0 var(--line), inset 0 -2px 0 rgb(0 0 0 / 0.08);
+
+  /* motion: short press, soft overshoot */
+  --dur: 150ms;
+  --ease-soft: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  --sans: "Nunito", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display: "Fredoka", "Nunito", system-ui, sans-serif;
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #121214;
   --surface: #1c1c1f;
+  --well: #121214;
   --text: #ececef;
-  --muted: #9a9aa2;
+  --muted: #a1a1aa;
+  --line: #ececef;
   --border: #2c2c31;
-  --accent: #6c9cff;
+  --toggle: #2b4b5c;
+  --on-cta: #10131a;
+  --accent: #3ccb7f;
+  --accent-text: #3ccb7f;
   --ok: #3ccb7f;
   --warn: #e6b23a;
   --bad: #ff6b63;
+  --focus: #6c9cff;
   --ink: #e8ecf5;
+  --shadow: 4px 4px 0 #000;
+  --shadow-sm: 2px 2px 0 #000;
+  --shadow-sm-hover: 1px 1px 0 #000;
+  --shadow-sm-pressed: 0 0 0 #000;
 }
 
 * {
@@ -55,29 +114,107 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+h1,
+h2,
+h3 {
+  font-family: var(--display);
+}
+
+/* ---- buttons: outlined clay that presses into its shadow */
+
 button,
 .button {
   font: inherit;
+  font-weight: 700;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: var(--bw-sm) solid var(--line);
+  border-radius: var(--r-sm);
   padding: 8px 14px;
+  box-shadow: var(--shadow-sm);
   cursor: pointer;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  touch-action: manipulation;
+  transition:
+    transform var(--dur) var(--ease-soft),
+    box-shadow var(--dur) var(--ease-soft),
+    background-color var(--dur) ease-out;
 }
 
-button:hover,
-.button:hover {
-  border-color: var(--accent);
+/* Hover only where there's a real pointer: a tap would leave it stuck on. */
+@media (hover: hover) {
+  button:hover:not(:disabled),
+  .button:hover {
+    transform: translate(1px, 1px);
+    box-shadow: var(--shadow-sm-hover);
+  }
+}
+
+button:active:not(:disabled),
+.button:active {
+  transform: translate(3px, 3px);
+  box-shadow: var(--shadow-sm-pressed);
+  transition-duration: 60ms;
+}
+
+button[aria-pressed="true"] {
+  background: var(--toggle);
+}
+
+button.primary {
+  background: var(--cta);
+  color: var(--on-cta);
 }
 
 button:disabled {
-  opacity: 0.5;
-  cursor: default;
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+/* ---- form controls */
+
+input[type="text"],
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: var(--bw-sm) solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+}
+
+select {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+input[type="range"],
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ---- icons (shared/icons.ts) */
+
+.ico,
+i[data-icon] {
+  display: inline-block;
+  width: 1.2em;
+  height: 1.2em;
+  flex: none;
+}
+
+.ico {
+  pointer-events: none;
 }
 
 code,
@@ -88,9 +225,10 @@ code,
 
 .dot {
   display: inline-block;
-  width: 9px;
-  height: 9px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
+  border: var(--bw-sm) solid var(--line);
   background: var(--muted);
   flex: none;
 }
@@ -102,4 +240,15 @@ code,
 }
 .dot.bad {
   background: var(--bad);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }

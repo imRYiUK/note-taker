@@ -1,4 +1,5 @@
 import { Connection, type ConnStatus } from "../shared/connection.ts";
+import { hydrateIcons, icon } from "../shared/icons.ts";
 import { DEFAULT_INK, applyPressureCurve, type InkSettings } from "../shared/ink.ts";
 import type { AdbDevice, ClientInfo, HistoryState, NotebookState, PadLink, PadUrls, ServerMsg } from "../shared/protocol.ts";
 import { qrSvg } from "../shared/qr.ts";
@@ -9,6 +10,8 @@ import { PageView, type FitMode } from "./renderer.ts";
 import { Sidebar } from "./sidebar.ts";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
+
+hydrateIcons();
 
 function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -163,7 +166,7 @@ function storageSet(key: string, value: string): void {
 const fitBtn = $<HTMLButtonElement>("#fit");
 function setFit(fit: FitMode) {
   view.setFit(fit);
-  fitBtn.textContent = fit === "width" ? "Fit: width" : "Fit: page";
+  fitBtn.querySelector(".txt")!.textContent = fit === "width" ? "Fit: width" : "Fit: page";
   storageSet("note-taker.viewer.fit", fit);
 }
 setFit(storageGet("note-taker.viewer.fit") === "page" ? "page" : "width");
@@ -453,7 +456,7 @@ function lanRow(l: PadLink) {
     if (lastUrls) renderUrls(lastUrls);
   });
   row.prepend(pick);
-  if (l.warning) row.append(h("span", { class: "warn", textContent: "⚠", title: l.warning }));
+  if (l.warning) row.append(h("span", { class: "warn", title: l.warning }, icon("warning", l.warning)));
   return row;
 }
 
@@ -600,7 +603,7 @@ function renderProbe(r: ProbeReport, file: string) {
         h(
           "tr",
           {},
-          h("td", { class: pass ? "pass" : "fail", textContent: pass ? "✓" : "✗" }),
+          h("td", { class: pass ? "pass" : "fail" }, icon(pass ? "check-circle" : "x-circle", pass ? "pass" : "fail")),
           h("td", { textContent: label }),
           h("td", { class: "v", textContent: value }),
         ),

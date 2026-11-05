@@ -1,18 +1,23 @@
 // App icon for the pad PWA (home-screen launcher), drawn procedurally and
 // encoded as PNG — no image assets or dependencies. A ruled page with a line
-// of ink and a pen across it. `maskable` fills the whole square (Android crops
+// of ink and a pen across it, in the UI's clay style (peach tile, ink
+// outlines, hard offset shadow; shared/base.css). `maskable` fills the whole square (Android crops
 // it to its own shape) and keeps the drawing inside the central safe circle.
 
 import { deflateSync } from "node:zlib";
 
 type RGB = [number, number, number];
 
-const BG: RGB = [0x12, 0x12, 0x14];
-const PAPER: RGB = [0xf6, 0xf5, 0xf1];
-const RULE: RGB = [0xc9, 0xd5, 0xe8];
-const INK: RGB = [0x1d, 0x1f, 0x2b];
-const PEN: RGB = [0x2f, 0x6f, 0xde];
-const PEN_TIP: RGB = [0xec, 0xec, 0xef];
+const BG: RGB = [0xfd, 0xbc, 0xb4]; // --peach
+const LINE: RGB = [0x2d, 0x37, 0x48]; // --line: outlines and shadow
+const PAPER: RGB = [0xff, 0xff, 0xff];
+const RULE: RGB = [0xad, 0xd8, 0xe6]; // --sky
+const INK: RGB = [0x2d, 0x37, 0x48];
+const PEN: RGB = [0x22, 0xc5, 0x5e]; // --green
+const PEN_TIP: RGB = [0xff, 0xf9, 0xf5];
+/** Outline width and shadow offset, unit square. */
+const STROKE = 0.02;
+const SHADOW = 0.03;
 
 /** Signed distance (unit square coordinates) to a rounded box centred at (cx, cy). */
 function box(x: number, y: number, cx: number, cy: number, hw: number, hh: number, r: number): number {
@@ -43,8 +48,11 @@ interface Layer {
 function layers(maskable: boolean): Layer[] {
   const out: Layer[] = [];
   out.push({ color: BG, sdf: maskable ? () => -1 : (x, y) => box(x, y, 0.5, 0.5, 0.5, 0.5, 0.22) });
-  // Paper: corners inside the maskable safe circle (radius 0.4).
-  out.push({ color: PAPER, sdf: (x, y) => box(x, y, 0.5, 0.5, 0.22, 0.29, 0.035) });
+  // Paper: corners inside the maskable safe circle (radius 0.4); hard shadow, outline, sheet.
+  const paper = (x: number, y: number) => box(x, y, 0.49, 0.49, 0.21, 0.28, 0.035);
+  out.push({ color: LINE, sdf: (x, y) => paper(x - SHADOW, y - SHADOW) - STROKE });
+  out.push({ color: LINE, sdf: (x, y) => paper(x, y) - STROKE });
+  out.push({ color: PAPER, sdf: paper });
   for (const ry of [0.38, 0.49, 0.6, 0.71]) {
     out.push({ color: RULE, sdf: (x, y) => capsule(x, y, 0.32, ry, 0.68, ry, 0.006) });
   }
@@ -61,8 +69,11 @@ function layers(maskable: boolean): Layer[] {
     },
   });
   // The pen, resting across the page, its tip at the end of the ink.
-  out.push({ color: PEN, sdf: (x, y) => capsule(x, y, 0.67, 0.5, 0.82, 0.26, 0.04) });
-  out.push({ color: PEN_TIP, sdf: (x, y) => capsule(x, y, 0.635, 0.555, 0.66, 0.515, 0.016) });
+  const pen = (x: number, y: number) => capsule(x, y, 0.67, 0.5, 0.82, 0.26, 0.04);
+  const tip = (x: number, y: number) => capsule(x, y, 0.635, 0.555, 0.66, 0.515, 0.016);
+  out.push({ color: LINE, sdf: (x, y) => Math.min(pen(x, y), tip(x, y)) - STROKE });
+  out.push({ color: PEN, sdf: pen });
+  out.push({ color: PEN_TIP, sdf: tip });
   return out;
 }
 

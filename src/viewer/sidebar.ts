@@ -11,6 +11,7 @@ import {
   type PageKind,
   type Template,
 } from "../shared/protocol.ts";
+import { icon, type IconName } from "../shared/icons.ts";
 import { TEMPLATE_LABELS } from "../shared/templates.ts";
 
 const KIND_LABELS: Record<PageKind, string> = { a4: "A4 pages", infinite: "Endless pages" };
@@ -42,8 +43,9 @@ function ago(ts: number): string {
 }
 
 /** A button that needs a second click within a few seconds (instead of a modal confirm). */
-function confirmButton(label: string, armedLabel: string, title: string, onConfirm: () => void): HTMLButtonElement {
-  const b = h("button", { type: "button", class: "icon danger", textContent: label, title });
+function confirmButton(label: IconName, armedLabel: string, title: string, onConfirm: () => void): HTMLButtonElement {
+  const b = h("button", { type: "button", class: "icon danger", title }, icon(label));
+  b.setAttribute("aria-label", title);
   let timer: ReturnType<typeof setTimeout> | null = null;
   b.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -57,7 +59,7 @@ function confirmButton(label: string, armedLabel: string, title: string, onConfi
     b.classList.add("armed");
     timer = setTimeout(() => {
       timer = null;
-      b.textContent = label;
+      b.replaceChildren(icon(label));
       b.classList.remove("armed");
     }, ARM_MS);
   });
@@ -189,9 +191,10 @@ export class Sidebar {
         );
         open.addEventListener("click", () => !active && this.send({ type: "notebook.open", id: nb.id }));
         open.addEventListener("dblclick", () => this.startRename(nb.id));
-        const rename = h("button", { type: "button", class: "icon", textContent: "✎", title: "Rename" });
+        const rename = h("button", { type: "button", class: "icon", title: "Rename" }, icon("pencil-simple"));
+        rename.setAttribute("aria-label", `Rename “${nb.title}”`);
         rename.addEventListener("click", () => this.startRename(nb.id));
-        const del = confirmButton("🗑", "Delete?", `Delete “${nb.title}” and all its pages`, () =>
+        const del = confirmButton("trash", "Delete?", `Delete “${nb.title}” and all its pages`, () =>
           this.send({ type: "notebook.delete", id: nb.id }),
         );
         row.append(open, h("span", { class: "nb-actions" }, rename, del));
@@ -247,16 +250,17 @@ export class Sidebar {
 
       const cell = h("div", { class: `thumb${p.id === this.pageId ? " active" : ""}`, title: `Page ${i + 1}` });
       cell.append(img, h("span", { class: "num", textContent: String(i + 1) }));
-      if (p.kind === "infinite") cell.append(h("span", { class: "kind", textContent: "∞", title: "Endless page" }));
+      if (p.kind === "infinite") cell.append(h("span", { class: "kind", title: "Endless page" }, icon("infinity", "Endless page")));
       if (st.pages.length > 1) {
         cell.append(
-          confirmButton("×", "Delete?", "Delete this page", () => this.send({ type: "page.delete", pageId: p.id })),
+          confirmButton("x", "Delete?", `Delete page ${i + 1}`, () => this.send({ type: "page.delete", pageId: p.id })),
         );
       }
       cell.addEventListener("click", () => p.id !== this.pageId && this.send({ type: "page.goto", pageId: p.id }));
       return cell;
     });
-    const add = h("button", { type: "button", class: "thumb add", textContent: "＋", title: "New page at the end" });
+    const add = h("button", { type: "button", class: "thumb add", title: "New page at the end" }, icon("plus"));
+    add.setAttribute("aria-label", "New page at the end");
     add.addEventListener("click", () => {
       const last = st.pages.at(-1);
       if (last) this.send({ type: "page.new", afterPageId: last.id });

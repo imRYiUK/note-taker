@@ -44,7 +44,7 @@ describe("PWA icon", () => {
       expect(png.pixel(size / 2, size / 2)[3]).toBe(255);
     }
     const mask = readPng(iconPng("pad-512-maskable.png")!);
-    expect(mask.pixel(0, 0)).toEqual([0x12, 0x12, 0x14, 255]);
+    expect(mask.pixel(0, 0)).toEqual([0xfd, 0xbc, 0xb4, 255]); // --peach
     expect(iconPng("pad-64.png")).toBeNull();
     expect(iconPng("../etc/passwd")).toBeNull();
   });

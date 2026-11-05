@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#121214" />
+    <meta name="theme-color" content="#e8e4f8" />
     <title>note-taker pad</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="../shared/base.css" />
@@ -17,7 +17,8 @@
         -webkit-user-select: none;
         -webkit-touch-callout: none;
         touch-action: none;
-        background: #121214;
+        /* Same as the canvas surround (canvas.ts SURROUND). */
+        background: #e8e4f8;
       }
       #ink {
         position: fixed;
@@ -28,116 +29,196 @@
       /* Status sits over the canvas but never blocks the pen. */
       #status {
         position: fixed;
-        top: max(6px, env(safe-area-inset-top));
-        right: max(6px, env(safe-area-inset-right));
+        top: max(8px, env(safe-area-inset-top));
+        right: max(8px, env(safe-area-inset-right));
         display: flex;
         align-items: center;
         gap: 6px;
-        padding: 3px 9px;
+        padding: 4px 10px;
         border-radius: 99px;
-        background: rgba(28, 28, 31, 0.72);
-        color: #ececef;
-        font-size: 11px;
+        background: color-mix(in srgb, var(--surface) 92%, transparent);
+        border: var(--bw-sm) solid var(--line);
+        box-shadow: 2px 2px 0 var(--line);
+        color: var(--text);
+        font-size: 11.5px;
+        font-weight: 700;
         pointer-events: none;
-        opacity: 0.75;
-        max-width: calc(100vw - 12px);
+        opacity: 0.85;
+        max-width: calc(100vw - 16px);
         flex-wrap: wrap;
+      }
+      #status .dot {
+        width: 10px;
+        height: 10px;
       }
       #status.alert {
         opacity: 1;
         font-size: 13px;
         padding: 6px 12px;
+        box-shadow: 3px 3px 0 var(--line);
       }
       #status-detail {
-        color: #9a9aa2;
+        color: var(--muted);
         font-family: var(--mono);
       }
       #status-pending {
-        color: #e6b23a;
+        color: #b45309;
       }
+
       /* Toolbar: collapses to the handle while writing (auto-hide), back with a tap / top-edge swipe. */
       #toolbar {
         position: fixed;
-        top: max(6px, env(safe-area-inset-top));
-        left: max(6px, env(safe-area-inset-left));
+        top: max(8px, env(safe-area-inset-top));
+        left: max(8px, env(safe-area-inset-left));
         display: flex;
         gap: 4px;
-        padding: 3px;
-        border-radius: 10px;
-        background: rgba(28, 28, 31, 0.72);
+        padding: 4px;
+        border-radius: 18px;
+        background: var(--surface);
+        border: var(--bw) solid var(--line);
+        box-shadow: 4px 4px 0 var(--line), var(--clay-inset);
         align-items: center;
         flex-wrap: wrap;
         /* Leave room for the status pill on the right. */
-        max-width: calc(100vw - 150px);
+        max-width: calc(100vw - 160px);
         transition:
           opacity 140ms ease-out,
           transform 140ms ease-out;
       }
       #toolbar.collapsed {
         opacity: 0;
-        transform: translateY(-110%);
+        transform: translateY(-120%);
         pointer-events: none;
       }
+      #toolbar button {
+        min-width: 44px;
+        height: 44px;
+        padding: 0 8px;
+        font-size: 14px;
+        line-height: 1;
+        border-radius: 12px;
+        border: var(--bw-sm) solid transparent;
+        background: transparent;
+        box-shadow: none;
+        transition:
+          background-color var(--dur) ease-out,
+          transform 90ms ease-out;
+      }
+      #toolbar button .ico,
+      #toolbar button i[data-icon] {
+        width: 22px;
+        height: 22px;
+      }
+      #toolbar button:hover:not(:disabled) {
+        transform: none;
+        box-shadow: none;
+      }
+      #toolbar button:active:not(:disabled) {
+        transform: scale(0.92);
+        box-shadow: none;
+        background: color-mix(in srgb, var(--text) 9%, transparent);
+      }
+      #toolbar button[aria-pressed="true"] {
+        background: var(--toggle);
+        border-color: var(--line);
+      }
+      #toolbar button:disabled {
+        opacity: 0.3;
+      }
+      #toolbar .sep {
+        width: 2px;
+        align-self: stretch;
+        margin: 8px 2px;
+        border-radius: 2px;
+        background: var(--border);
+      }
+      #toolbar button#mode {
+        font-size: 13px;
+        font-weight: 800;
+        min-width: 58px;
+      }
+      #page-label {
+        min-width: 36px;
+        text-align: center;
+        font-size: 12px;
+        font-weight: 700;
+        font-family: var(--mono);
+        color: var(--text);
+        font-variant-numeric: tabular-nums;
+      }
+
       #tb-handle {
         position: fixed;
-        top: max(6px, env(safe-area-inset-top));
-        left: max(6px, env(safe-area-inset-left));
+        top: max(8px, env(safe-area-inset-top));
+        left: max(8px, env(safe-area-inset-left));
         display: flex;
         align-items: center;
-        gap: 6px;
-        height: 30px;
-        padding: 0 10px;
-        border: 0;
+        gap: 8px;
+        height: 44px;
+        padding: 0 14px;
         border-radius: 99px;
-        background: rgba(28, 28, 31, 0.6);
-        color: #ececef;
-        font-size: 13px;
+        border: var(--bw) solid var(--line);
+        background: var(--surface);
+      }
+      #tb-handle .ico {
+        width: 20px;
+        height: 20px;
       }
       .swatch {
         display: inline-block;
-        width: 16px;
-        height: 16px;
+        width: 20px;
+        height: 20px;
         border-radius: 50%;
-        border: 2px solid rgba(255, 255, 255, 0.85);
+        border: var(--bw-sm) solid var(--line);
         box-sizing: border-box;
         background: currentColor;
       }
+
       #palette {
         position: fixed;
-        top: calc(max(6px, env(safe-area-inset-top)) + 48px);
-        left: max(6px, env(safe-area-inset-left));
+        top: calc(max(8px, env(safe-area-inset-top)) + 64px);
+        left: max(8px, env(safe-area-inset-left));
         display: grid;
         gap: 10px;
-        padding: 10px 12px;
-        border-radius: 12px;
-        background: rgba(28, 28, 31, 0.94);
-        color: #ececef;
-        font-size: 13px;
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+        padding: 12px 14px;
+        border-radius: 20px;
+        background: var(--surface);
+        border: var(--bw) solid var(--line);
+        box-shadow: var(--shadow);
+        color: var(--text);
+        font-size: 14px;
       }
       #palette .prow {
         display: flex;
-        gap: 8px;
+        gap: 6px;
         align-items: center;
       }
       #palette button,
       #palette label.custom {
-        width: 40px;
-        height: 40px;
+        width: 46px;
+        height: 46px;
         padding: 0;
         border-radius: 50%;
-        border: 2px solid transparent;
+        border: var(--bw) solid transparent;
         background: transparent;
+        box-shadow: none;
         display: grid;
         place-items: center;
         position: relative;
+        cursor: pointer;
+      }
+      #palette button:hover:not(:disabled),
+      #palette button:active:not(:disabled) {
+        transform: none;
+        box-shadow: none;
       }
       #palette [aria-pressed="true"] {
-        border-color: #6c9cff;
+        border-color: var(--line);
+        background: var(--lilac);
       }
       #palette .swatch {
-        width: 26px;
-        height: 26px;
+        width: 28px;
+        height: 28px;
       }
       #palette label.custom input {
         position: absolute;
@@ -155,51 +236,24 @@
       #palette .dot-w {
         display: block;
         border-radius: 50%;
-        background: #ececef;
+        background: var(--text);
       }
       #palette .opt {
         display: flex;
-        gap: 8px;
+        gap: 10px;
         align-items: center;
-        color: #c6c6cc;
+        min-height: 44px;
+        font-weight: 700;
       }
       #palette .opt input {
-        width: 18px;
-        height: 18px;
+        width: 20px;
+        height: 20px;
       }
-      #page-label {
-        min-width: 34px;
-        text-align: center;
-        font-size: 12px;
-        font-family: var(--mono);
-        color: #c6c6cc;
-      }
-      #toolbar button {
-        min-width: 40px;
-        height: 34px;
-        padding: 0 8px;
-        font-size: 16px;
-        line-height: 1;
-        border-radius: 7px;
-        border-color: transparent;
-        background: transparent;
-        color: #ececef;
-      }
-      #toolbar button[aria-pressed="true"] {
-        background: #2f6fde;
-        color: #fff;
-      }
-      #toolbar button:disabled {
-        opacity: 0.35;
-      }
-      #toolbar .sep {
-        width: 1px;
-        margin: 4px 2px;
-        background: #3a3a40;
-      }
-      #toolbar button#mode {
-        font-size: 13px;
-        min-width: 52px;
+      /* Controls stay above the strip-mode edge handle when the toolbar wraps. */
+      #toolbar,
+      #tb-handle,
+      #palette {
+        z-index: 2;
       }
       [hidden] {
         display: none !important;
@@ -208,69 +262,75 @@
       #margin {
         position: fixed;
         left: 0;
-        top: calc(max(6px, env(safe-area-inset-top)) + 48px);
+        top: calc(max(8px, env(safe-area-inset-top)) + 64px);
         bottom: 0;
-        width: 22px;
+        width: 26px;
         padding: 0;
-        border: 0;
-        border-radius: 0 10px 10px 0;
-        background: linear-gradient(90deg, rgba(47, 111, 222, 0.22), rgba(47, 111, 222, 0.06));
+        border: var(--bw-sm) solid var(--line);
+        border-left: 0;
+        border-radius: 0 14px 14px 0;
+        background: linear-gradient(90deg, rgb(34 197 94 / 0.38), rgb(34 197 94 / 0.14));
+        box-shadow: none;
+        color: var(--text);
         touch-action: none;
       }
-      #margin::after {
-        content: "↵";
-        position: absolute;
-        left: 4px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: rgba(47, 111, 222, 0.7);
-        font-size: 14px;
+      #margin:hover:not(:disabled),
+      #margin:active:not(:disabled) {
+        transform: none;
+        box-shadow: none;
+      }
+      #margin .ico,
+      #margin i[data-icon] {
+        width: 16px;
+        height: 16px;
       }
       #fullscreen {
         position: fixed;
-        bottom: max(8px, env(safe-area-inset-bottom));
-        right: max(8px, env(safe-area-inset-right));
-        padding: 6px 10px;
-        font-size: 12px;
-        opacity: 0.8;
+        bottom: max(10px, env(safe-area-inset-bottom));
+        right: max(10px, env(safe-area-inset-right));
+        padding: 8px 12px;
+        font-size: 13px;
+        opacity: 0.92;
       }
     </style>
   </head>
   <body>
     <canvas id="ink"></canvas>
     <div id="toolbar">
-      <button id="tool-pen" type="button" aria-pressed="true" title="Pen">✎</button>
-      <button id="tool-highlighter" type="button" aria-pressed="false" title="Highlighter">🖍</button>
-      <button id="tool-eraser" type="button" aria-pressed="false" title="Stroke eraser">⌫</button>
-      <button id="style" type="button" title="Colour and width"><span class="swatch"></span></button>
+      <button id="tool-pen" type="button" aria-pressed="true" aria-label="Pen" title="Pen"><i data-icon="pencil-simple"></i></button>
+      <button id="tool-highlighter" type="button" aria-pressed="false" aria-label="Highlighter" title="Highlighter"><i data-icon="highlighter"></i></button>
+      <button id="tool-eraser" type="button" aria-pressed="false" aria-label="Stroke eraser" title="Stroke eraser"><i data-icon="eraser"></i></button>
+      <button id="style" type="button" aria-label="Colour and width" title="Colour and width"><span class="swatch"></span></button>
       <span class="sep"></span>
-      <button id="undo" type="button" title="Undo (two-finger tap)" disabled>↶</button>
-      <button id="redo" type="button" title="Redo (three-finger tap)" disabled>↷</button>
+      <button id="undo" type="button" aria-label="Undo" title="Undo (two-finger tap)" disabled><i data-icon="arrow-u-up-left"></i></button>
+      <button id="redo" type="button" aria-label="Redo" title="Redo (three-finger tap)" disabled><i data-icon="arrow-u-up-right"></i></button>
       <span class="sep"></span>
       <button id="mode" type="button" title="Zoom strip / whole page">Strip</button>
-      <button id="back" type="button" title="Strip: one step back">←</button>
-      <button id="newline" type="button" title="Strip: next line (or tap the left edge)">↵</button>
-      <button id="blank" type="button" aria-pressed="false" title="Blank pad: no ink on the phone, watch the PC">◐</button>
+      <button id="back" type="button" aria-label="Strip: one step back" title="Strip: one step back"><i data-icon="arrow-left"></i></button>
+      <button id="newline" type="button" aria-label="Strip: next line" title="Strip: next line (or tap the left edge)"><i data-icon="arrow-elbow-down-left"></i></button>
+      <button id="blank" type="button" aria-pressed="false" aria-label="Blank pad" title="Blank pad: no ink on the phone, watch the PC"><i data-icon="circle-half"></i></button>
       <span class="sep"></span>
-      <button id="page-prev" type="button" title="Previous page" disabled>‹</button>
+      <button id="page-prev" type="button" aria-label="Previous page" title="Previous page" disabled><i data-icon="caret-left"></i></button>
       <span id="page-label">–</span>
-      <button id="page-next" type="button" title="Next page" disabled>›</button>
-      <button id="page-new" type="button" title="New page after this one" disabled>＋</button>
+      <button id="page-next" type="button" aria-label="Next page" title="Next page" disabled><i data-icon="caret-right"></i></button>
+      <button id="page-new" type="button" aria-label="New page" title="New page after this one" disabled><i data-icon="plus"></i></button>
       <span class="sep"></span>
-      <button id="tb-hide" type="button" title="Hide toolbar (swipe down from the top edge to bring it back)">⌃</button>
+      <button id="tb-hide" type="button" aria-label="Hide toolbar" title="Hide toolbar (swipe down from the top edge to bring it back)"><i data-icon="caret-up"></i></button>
     </div>
-    <button id="tb-handle" type="button" title="Show toolbar" hidden><span class="swatch"></span><span id="tb-handle-tool">✎</span></button>
+    <button id="tb-handle" type="button" aria-label="Show toolbar" title="Show toolbar" hidden>
+      <span class="swatch"></span><span id="tb-handle-tool"><i data-icon="pencil-simple"></i></span>
+    </button>
     <div id="palette" hidden>
       <div class="prow" id="pal-colors"></div>
       <div class="prow" id="pal-widths"></div>
       <label class="opt"><input id="autohide" type="checkbox" /> Hide toolbar while writing</label>
     </div>
-    <button id="margin" type="button" aria-label="Next line" title="Next line"></button>
+    <button id="margin" type="button" aria-label="Next line" title="Next line"><i data-icon="arrow-elbow-down-left"></i></button>
     <div id="status">
       <span class="dot warn"></span><span id="status-text">Connecting…</span><span id="status-detail"></span
       ><span id="status-pending"></span>
     </div>
-    <button id="fullscreen" type="button">Fullscreen</button>
+    <button id="fullscreen" type="button"><i data-icon="corners-out"></i>Fullscreen</button>
     <script type="module" src="./pad.ts"></script>
   </body>
 </html>

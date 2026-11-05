@@ -12,6 +12,7 @@
 import type { Connection } from "../shared/connection.ts";
 import { POINT_STRIDE } from "../shared/ink.ts";
 import type { StrokePointsMsg } from "../shared/protocol.ts";
+import { icon } from "../shared/icons.ts";
 
 const WINDOW_MS = 10_000;
 const SESSION_MAX = 50_000;
@@ -73,7 +74,9 @@ export class LatencyHud {
       this.session = [];
       this.render();
     });
-    const close = this.button("×", "Close (Ctrl+Shift+L)", () => this.toggle(false));
+    const close = this.button("", "Close (Ctrl+Shift+L)", () => this.toggle(false));
+    close.append(icon("x"));
+    close.setAttribute("aria-label", "Close latency HUD");
     head.append(title, copy, reset, close);
     root.append(head, this.body);
   }
