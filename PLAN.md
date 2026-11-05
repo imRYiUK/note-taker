@@ -348,12 +348,19 @@ Each milestone ends with a working, usable state. Estimates assume part-time wor
   palm doesn't draw.
 
 ### M2 — Persistence & reliability (1 day)
-- [ ] SQLite store, schema, WAL.
-- [ ] Commit strokes on `stroke.end`; snapshot on connect.
-- [ ] Pad outbox + resend on reconnect; server dedupe by stroke id.
-- [ ] Undo/redo (server op stack) from phone gesture and PC shortcut.
-- [ ] Stroke eraser (hit-test against stroke outline) via **toolbar toggle** (side button not
-      delivered to Chrome — see §15) + two-finger tap undo.
+- [x] SQLite store, schema, WAL (`~/.local/share/note-taker/notes.db`; points packed Float32,
+      strictly increasing `created_at` = paint order).
+- [x] Commit strokes on `stroke.end` (stroke + undo op in one transaction); snapshot on connect.
+- [x] Pad outbox (also in localStorage) + resend on reconnect; server dedupes by stroke id and
+      acks (`stroke.ack`); point-count mismatch → `stroke.resync`. A reconnecting pad takes over
+      its stroke still live on the dead socket. Client silence watchdog (6 s) + server
+      `idleTimeout` detect dead sockets after Wi-Fi drops.
+- [x] Undo/redo (server op stack shared by all clients, persisted) from pad buttons, two-/three-finger
+      tap and viewer `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`. Clear page is one undoable step.
+- [x] Stroke eraser (capsule hit-test against the stroke centerline + half width, `shared/hit.ts`)
+      via **toolbar toggle** (side button not delivered to Chrome — see §15); one eraser gesture
+      = one undo step.
+- [ ] **On device:** kill/restart server and toggle Wi-Fi mid-writing on the S23.
 - **Done when:** kill/restart server or toggle Wi-Fi mid-writing → nothing lost,
   both sides show identical pages.
 

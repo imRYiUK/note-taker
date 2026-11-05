@@ -1,10 +1,11 @@
 // Wire protocol shared by server, pad (phone) and viewer (PC).
 // JSON over WebSocket. See PLAN.md §4. M0: handshake, liveness, device
-// management. M1: live strokes, page snapshot, ink settings.
+// management. M1: live strokes, page snapshot, ink settings. M2: stroke acks
+// (pad outbox), erase, undo/redo.
 
 import { POINT_STRIDE, parseInkPatch, type InkSettings } from "./ink.ts";
 
-export const PROTOCOL_VERSION = 2; // 2: M1 strokes, snapshot, settings
+export const PROTOCOL_VERSION = 3; // 2: M1 strokes, snapshot, settings · 3: M2 acks, erase, undo
 export const DEFAULT_PORT = 7777;
 export const WS_PATH = "/ws";
 
@@ -58,7 +59,14 @@ export interface StrokeData {
 export const LIMITS = {
   pointsPerMessage: 4096,
   pointsPerStroke: 100_000,
+  idsPerMessage: 5000,
 } as const;
+
+/** Whether undo / redo would do anything right now. */
+export interface HistoryState {
+  canUndo: boolean;
+  canRedo: boolean;
+}
 
 // ---------------------------------------------------------------- client → server
 
@@ -76,6 +84,11 @@ export type ClientMsg =
   /** `n` = total point count the pad sent, so the server can detect gaps. */
   | { type: "stroke.end"; id: string; n: number }
   | StrokeCancelMsg
+  /** Erase whole strokes. Messages with the same `group` (one eraser gesture) merge into one undo step. */
+  | { type: "erase"; pageId: string; strokeIds: string[]; group?: string }
+  | { type: "undo" }
+  | { type: "redo" }
+  /** Erase every stroke on the page (one undo step). */
   | { type: "page.clear"; pageId: string }
   | { type: "settings.set"; ink: Partial<InkSettings> };
 
@@ -97,6 +110,15 @@ export type ServerMsg =
   | StrokeCancelMsg
   /** A stroke was committed (sent to everyone except the pad that drew it). */
   | { type: "stroke.added"; stroke: StrokeData }
+  /** To the drawing pad: the stroke is stored (or was already) — drop it from the outbox. */
+  | { type: "stroke.ack"; id: string }
+  /** To the drawing pad: points went missing — send the whole stroke again. */
+  | { type: "stroke.resync"; id: string }
+  /** Strokes erased or undone. */
+  | { type: "strokes.removed"; pageId: string; ids: string[] }
+  /** Strokes brought back by undo / redo. */
+  | { type: "strokes.restored"; strokes: StrokeData[] }
+  | ({ type: "history" } & HistoryState)
   | { type: "settings"; ink: InkSettings }
   | { type: "error"; code: ErrorCode; message: string };
 
@@ -125,6 +147,10 @@ const isStr = (v: unknown, max = 256): v is string => typeof v === "string" && v
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const isId = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 64;
 const isColor = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+
+function isIdArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.length <= LIMITS.idsPerMessage && v.every(isId);
+}
 
 function isPointArray(v: unknown): v is number[] {
   if (!Array.isArray(v) || v.length % POINT_STRIDE !== 0) return false;
@@ -173,6 +199,18 @@ export function parseClientMsg(raw: string | Buffer): ClientMsg | null {
       return { type: "stroke.end", id: v.id, n: v.n as number };
     case "stroke.cancel":
       return isId(v.id) ? { type: "stroke.cancel", id: v.id } : null;
+    case "erase":
+      if (!isId(v.pageId) || !isIdArray(v.strokeIds)) return null;
+      if (v.group !== undefined && !isId(v.group)) return null;
+      return {
+        type: "erase",
+        pageId: v.pageId,
+        strokeIds: v.strokeIds,
+        ...(v.group !== undefined ? { group: v.group as string } : {}),
+      };
+    case "undo":
+    case "redo":
+      return { type: v.type };
     case "page.clear":
       return isId(v.pageId) ? { type: "page.clear", pageId: v.pageId } : null;
     case "settings.set": {

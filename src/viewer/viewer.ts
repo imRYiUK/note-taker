@@ -1,6 +1,6 @@
 import { Connection, type ConnStatus } from "../shared/connection.ts";
 import { DEFAULT_INK, applyPressureCurve, type InkSettings } from "../shared/ink.ts";
-import type { AdbDevice, ClientInfo, PadUrls, ServerMsg } from "../shared/protocol.ts";
+import type { AdbDevice, ClientInfo, HistoryState, PadUrls, ServerMsg } from "../shared/protocol.ts";
 import { PageView, type FitMode } from "./renderer.ts";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -19,6 +19,9 @@ function h<K extends keyof HTMLElementTagNameMap>(
 }
 
 let myId: string | null = null;
+// Declared before `conn`: its constructor reports the first status synchronously.
+let online = false;
+let history: HistoryState = { canUndo: false, canRedo: false };
 const view = new PageView($("#stage"));
 
 // ------------------------------------------------------------------ connection
@@ -33,9 +36,11 @@ const STATUS: Record<ConnStatus, [string, string]> = {
 
 const conn = new Connection("viewer", {
   onStatus: (s) => {
+    online = s === "open";
     const [label, cls] = STATUS[s];
     const el = $("#server-status");
     el.replaceChildren(h("span", { class: `dot ${cls}` }), h("span", {}, label));
+    renderHistory();
   },
   onMessage: (msg) => handle(msg),
 });
@@ -67,6 +72,16 @@ function handle(msg: ServerMsg) {
     case "stroke.added":
       view.addStroke(msg.stroke);
       renderObserved();
+      break;
+    case "strokes.removed":
+      if (msg.pageId === view.page?.id) view.removeStrokes(msg.ids);
+      break;
+    case "strokes.restored":
+      view.restoreStrokes(msg.strokes);
+      break;
+    case "history":
+      history = { canUndo: msg.canUndo, canRedo: msg.canRedo };
+      renderHistory();
       break;
     case "settings":
       ink = msg.ink;
@@ -117,26 +132,18 @@ followBtn.addEventListener("click", () => {
   followBtn.setAttribute("aria-pressed", String(view.follow));
 });
 
-// Two clicks to clear: no undo until M2.
-const clearBtn = $<HTMLButtonElement>("#clear");
-let clearArmed: ReturnType<typeof setTimeout> | null = null;
-clearBtn.addEventListener("click", () => {
-  if (clearArmed) {
-    clearTimeout(clearArmed);
-    clearArmed = null;
-    clearBtn.classList.remove("danger");
-    clearBtn.textContent = "Clear page";
-    if (view.page) conn.send({ type: "page.clear", pageId: view.page.id });
-    return;
-  }
-  if (!view.strokeCount) return;
-  clearBtn.classList.add("danger");
-  clearBtn.textContent = "Click again to clear";
-  clearArmed = setTimeout(() => {
-    clearArmed = null;
-    clearBtn.classList.remove("danger");
-    clearBtn.textContent = "Clear page";
-  }, 3000);
+function renderHistory() {
+  $<HTMLButtonElement>("#undo").disabled = !online || !history.canUndo;
+  $<HTMLButtonElement>("#redo").disabled = !online || !history.canRedo;
+}
+$("#undo").addEventListener("click", () => conn.send({ type: "undo" }));
+$("#redo").addEventListener("click", () => conn.send({ type: "redo" }));
+
+// Clearing is one undo step, so no confirmation.
+$("#clear").addEventListener("click", () => {
+  if (!view.page || !view.strokeCount) return;
+  conn.send({ type: "page.clear", pageId: view.page.id });
+  toast("Page cleared — Ctrl+Z to undo", "info");
 });
 
 const panel = $("#panel");
@@ -152,8 +159,16 @@ panelBtn.addEventListener("click", () => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.target instanceof HTMLInputElement || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key === "f" || e.key === "F") setFit(view.fit === "width" ? "page" : "width");
+  if (e.target instanceof HTMLInputElement) return;
+  const mod = e.ctrlKey || e.metaKey;
+  const key = e.key.toLowerCase();
+  if (mod && !e.altKey && (key === "z" || key === "y")) {
+    e.preventDefault();
+    conn.send({ type: key === "y" || e.shiftKey ? "redo" : "undo" });
+    return;
+  }
+  if (mod || e.altKey) return;
+  if (key === "f") setFit(view.fit === "width" ? "page" : "width");
 });
 
 function renderPadStatus(clients: ClientInfo[]) {
@@ -458,9 +473,10 @@ async function loadLatestProbe() {
 // ------------------------------------------------------------------ toast
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
-function toast(text: string) {
+function toast(text: string, kind: "error" | "info" = "error") {
   const el = $("#toast");
   el.textContent = text;
+  el.classList.toggle("info", kind === "info");
   el.style.display = "block";
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.style.display = "none"), 4000);

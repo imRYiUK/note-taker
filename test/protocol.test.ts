@@ -34,6 +34,20 @@ describe("parseClientMsg", () => {
     expect(parseClientMsg(j({ type: "adb.open", serial: "R5C", page: "/etc" }))).toBeNull();
   });
 
+  test("erase / undo / redo", () => {
+    expect(parseClientMsg(j({ type: "erase", pageId: "p", strokeIds: ["a", "b"] }))).toEqual({
+      type: "erase",
+      pageId: "p",
+      strokeIds: ["a", "b"],
+    });
+    expect(parseClientMsg(j({ type: "erase", pageId: "p", strokeIds: ["a"], group: "g" }))).toMatchObject({ group: "g" });
+    expect(parseClientMsg(j({ type: "erase", pageId: "p", strokeIds: [1] }))).toBeNull();
+    expect(parseClientMsg(j({ type: "erase", pageId: "p", strokeIds: ["a"], group: 5 }))).toBeNull();
+    expect(parseClientMsg(j({ type: "erase", pageId: "p", strokeIds: new Array(LIMITS.idsPerMessage + 1).fill("a") }))).toBeNull();
+    expect(parseClientMsg(j({ type: "undo", extra: 1 }))).toEqual({ type: "undo" });
+    expect(parseClientMsg(j({ type: "redo" }))).toEqual({ type: "redo" });
+  });
+
   test("accepts Buffer input", () => {
     expect(parseClientMsg(Buffer.from(j({ type: "ping", t: 0 })))).toEqual({ type: "ping", t: 0 });
   });

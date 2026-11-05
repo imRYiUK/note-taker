@@ -12,6 +12,7 @@ import {
   type InkSettings,
   type Rect,
 } from "../shared/ink.ts";
+import { hitsStroke, pointsBounds } from "../shared/hit.ts";
 import type { PageInfo, StrokeData } from "../shared/protocol.ts";
 
 const MARGIN = 10; // CSS px around the page
@@ -37,6 +38,8 @@ export class PadCanvas {
   private ink: InkSettings = DEFAULT_INK;
   private strokes: StrokeData[] = [];
   private readonly paths = new Map<string, { path: Path2D; bounds: Rect | null }>();
+  /** Centerline bounds for hit-testing (independent of ink settings). */
+  private readonly centerBounds = new Map<string, Rect | null>();
 
   // Layout: page unit → CSS px is `x * scale + ox`.
   private dpr = 1;
@@ -59,6 +62,7 @@ export class PadCanvas {
     this.page = page;
     this.strokes = strokes;
     this.paths.clear();
+    this.centerBounds.clear();
     if (pageChanged) this.resize();
     else this.redrawAll();
   }
@@ -69,6 +73,43 @@ export class PadCanvas {
     this.paintStroke(this.cctx, s, path);
     this.blit(unionRect(this.deviceRect(bounds), this.liveRect));
     this.liveRect = null;
+  }
+
+  /** Remove strokes (erased / undone); returns true if any were on screen. */
+  removeStrokes(ids: Iterable<string>): boolean {
+    const gone = new Set(ids);
+    const before = this.strokes.length;
+    this.strokes = this.strokes.filter((s) => !gone.has(s.id));
+    if (this.strokes.length === before) return false;
+    for (const id of gone) {
+      this.paths.delete(id);
+      this.centerBounds.delete(id);
+    }
+    this.redrawAll();
+    return true;
+  }
+
+  /** Bring strokes back (undo of an erase / redo), keeping creation order. */
+  restoreStrokes(strokes: StrokeData[]): void {
+    const have = new Set(this.strokes.map((s) => s.id));
+    const add = strokes.filter((s) => s.pageId === this.page?.id && !have.has(s.id));
+    if (!add.length) return;
+    this.strokes = [...this.strokes, ...add].sort((a, b) => a.createdAt - b.createdAt);
+    this.redrawAll();
+  }
+
+  /** Ids of strokes touched by an eraser moving a→b (page units) with radius r. */
+  hitTest(ax: number, ay: number, bx: number, by: number, r: number): string[] {
+    const hits: string[] = [];
+    for (const s of this.strokes) {
+      let bounds = this.centerBounds.get(s.id);
+      if (bounds === undefined) {
+        bounds = pointsBounds(s.pts);
+        this.centerBounds.set(s.id, bounds);
+      }
+      if (hitsStroke({ pts: s.pts, width: s.width, bounds }, ax, ay, bx, by, r)) hits.push(s.id);
+    }
+    return hits;
   }
 
   setInk(ink: InkSettings): void {
@@ -102,6 +143,11 @@ export class PadCanvas {
     return [(clientX - this.ox) / this.scale, (clientY - this.oy) / this.scale];
   }
 
+  /** CSS px → page units at the current zoom. */
+  pxToPage(px: number): number {
+    return px / this.scale;
+  }
+
   inPage(x: number, y: number): boolean {
     return !!this.page && x >= 0 && y >= 0 && x <= this.page.width && y <= this.page.height;
   }
@@ -127,6 +173,28 @@ export class PadCanvas {
     this.ctx.fillStyle = live.color;
     this.ctx.fill(path);
     this.ctx.restore();
+  }
+
+  /** Eraser ring at (x, y) page units, radius r; null hides it. Uses the live layer. */
+  drawEraser(at: { x: number; y: number; r: number } | null): void {
+    if (!at) {
+      this.drawLive(null);
+      return;
+    }
+    const rect = this.deviceRect({ x: at.x - at.r, y: at.y - at.r, w: 2 * at.r, h: 2 * at.r });
+    this.blit(unionRect(rect, this.liveRect));
+    this.liveRect = rect;
+    const c = this.ctx;
+    c.save();
+    this.setPageTransform(c);
+    c.beginPath();
+    c.arc(at.x, at.y, at.r, 0, Math.PI * 2);
+    c.fillStyle = "rgba(210, 65, 58, 0.12)";
+    c.fill();
+    c.lineWidth = 1.5 / this.scale;
+    c.strokeStyle = "rgba(210, 65, 58, 0.85)";
+    c.stroke();
+    c.restore();
   }
 
   private redrawAll(): void {

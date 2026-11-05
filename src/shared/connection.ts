@@ -11,6 +11,9 @@ import {
   type ServerMsg,
 } from "./protocol.ts";
 
+/** The server pings every 2 s; this much silence means the socket is dead (e.g. Wi-Fi dropped). */
+const SILENCE_MS = 6000;
+
 export type ConnStatus = "connecting" | "open" | "closed" | "unauthorized" | "outdated";
 
 export interface ConnectionEvents {
@@ -68,6 +71,7 @@ export class Connection {
   private retryMs = 250;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastMessageAt = 0;
 
   constructor(
     private readonly role: Role,
@@ -76,7 +80,10 @@ export class Connection {
     this.connect();
     // Reconnect immediately when the phone wakes up / tab becomes visible.
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && this.status !== "open") this.reconnectNow();
+      if (document.visibilityState !== "visible") return;
+      // Timers were throttled while hidden: give the socket a fresh grace period.
+      this.lastMessageAt = performance.now();
+      if (this.status !== "open") this.reconnectNow();
     });
     window.addEventListener("online", () => this.reconnectNow());
   }
@@ -100,6 +107,7 @@ export class Connection {
     };
 
     ws.onmessage = (ev) => {
+      this.lastMessageAt = performance.now();
       let msg: ServerMsg;
       try {
         msg = JSON.parse(ev.data as string);
@@ -124,8 +132,8 @@ export class Connection {
     };
 
     ws.onclose = (ev) => {
+      if (this.ws !== ws) return; // an abandoned socket (see dropDead)
       this.stopPinging();
-      if (this.ws !== ws) return;
       this.ws = null;
       if (ev.code === CloseCode.badToken) {
         this.setStatus("unauthorized", "Wrong or missing token — open the link from the PC (QR / URL with ?token=)");
@@ -158,9 +166,35 @@ export class Connection {
 
   private startPinging(): void {
     this.stopPinging();
-    const ping = () => this.send({ type: "ping", t: performance.now() });
+    this.lastMessageAt = performance.now();
+    const ping = () => {
+      if (document.visibilityState === "visible" && performance.now() - this.lastMessageAt > SILENCE_MS) {
+        this.dropDead();
+        return;
+      }
+      this.send({ type: "ping", t: performance.now() });
+    };
     ping();
     this.pingTimer = setInterval(ping, 2000);
+  }
+
+  /**
+   * The socket went silent. Closing a dead TCP connection can take a long
+   * time to report, so abandon it and reconnect right away.
+   */
+  private dropDead(): void {
+    const ws = this.ws;
+    if (!ws) return;
+    this.stopPinging();
+    this.ws = null;
+    ws.onopen = ws.onmessage = ws.onclose = null;
+    try {
+      ws.close();
+    } catch {
+      // already closing
+    }
+    this.setStatus("closed", "connection lost");
+    this.connect();
   }
 
   private stopPinging(): void {

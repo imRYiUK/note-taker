@@ -12,7 +12,7 @@ import {
 import type { InkSettings } from "../shared/ink.ts";
 import { authorize } from "./net.ts";
 import type { AdbWatcher } from "./adb.ts";
-import { Notebook } from "./notebook.ts";
+import type { Change, Notebook } from "./notebook.ts";
 
 export interface WsData {
   id: string;
@@ -34,7 +34,7 @@ export interface HubOptions {
   log: (msg: string) => void;
   helloTimeoutMs?: number;
   pingIntervalMs?: number;
-  notebook?: Notebook;
+  notebook: Notebook;
   ink: InkSettings;
   /** Called after ink settings change (to persist them). */
   onInkChange?: (ink: InkSettings) => void;
@@ -48,7 +48,7 @@ export class Hub {
   ink: InkSettings;
 
   constructor(private readonly opts: HubOptions) {
-    this.notebook = opts.notebook ?? new Notebook();
+    this.notebook = opts.notebook;
     this.ink = opts.ink;
     this.pingTimer = setInterval(() => this.pingAll(), opts.pingIntervalMs ?? 2000);
   }
@@ -109,14 +109,21 @@ export class Hub {
         }
         this.stroke(ws, msg);
         break;
-      case "page.clear":
-        if (this.notebook.clear(msg.pageId)) {
-          this.opts.log("page cleared");
-          this.broadcast({ type: "snapshot", ...this.notebook.snapshot() });
-        } else {
-          this.send(ws, { type: "error", code: "unknown_page", message: `no page ${msg.pageId}` });
-        }
+      case "erase":
+        this.applyChange(ws, this.notebook.erase(msg.pageId, msg.strokeIds, msg.group), msg.pageId);
         break;
+      case "page.clear": {
+        const change = this.notebook.clear(msg.pageId);
+        if (change?.removed) this.opts.log(`page cleared (${change.removed.ids.length} strokes)`);
+        this.applyChange(ws, change, msg.pageId);
+        break;
+      }
+      case "undo":
+      case "redo": {
+        const change = msg.type === "undo" ? this.notebook.undo() : this.notebook.redo();
+        if (change) this.applyChange(ws, change);
+        break;
+      }
       case "settings.set":
         this.ink = { ...this.ink, ...msg.ink };
         this.broadcast({ type: "settings", ink: this.ink });
@@ -135,9 +142,11 @@ export class Hub {
       case "stroke.begin": {
         const res = nb.begin(owner, msg);
         if (res === "ok") this.toViewers(msg);
-        else if (res === "unknown_page") {
+        else if (res === "duplicate") this.send(ws, { type: "stroke.ack", id: msg.id });
+        else {
           this.send(ws, { type: "error", code: "unknown_page", message: `no page ${msg.pageId}` });
-          // The pad is out of date (e.g. server restarted) — give it the current page.
+          // The pad is out of date — give it the current page; it drops the stroke from its outbox.
+          this.send(ws, { type: "stroke.ack", id: msg.id });
           this.send(ws, { type: "snapshot", ...nb.snapshot() });
         }
         break;
@@ -149,16 +158,36 @@ export class Hub {
         const res = nb.end(owner, msg.id, msg.n);
         if (!res) {
           this.toViewers({ type: "stroke.cancel", id: msg.id });
-          break;
+        } else if (res.kind === "duplicate") {
+          this.send(ws, { type: "stroke.ack", id: msg.id });
+        } else if (res.kind === "resync") {
+          this.opts.log(`stroke ${msg.id}: ${res.missing} point(s) missing — asking for a resend`);
+          this.toViewers({ type: "stroke.cancel", id: msg.id });
+          this.send(ws, { type: "stroke.resync", id: msg.id });
+        } else {
+          this.send(ws, { type: "stroke.ack", id: msg.id });
+          this.broadcast({ type: "stroke.added", stroke: res.stroke }, ws);
+          this.broadcast({ type: "history", ...nb.history() });
         }
-        if (res.missing !== 0) this.opts.log(`stroke ${msg.id}: ${res.missing} point(s) missing`);
-        this.broadcast({ type: "stroke.added", stroke: res.stroke }, ws);
         break;
       }
       case "stroke.cancel":
         if (nb.cancel(owner, msg.id)) this.toViewers(msg);
         break;
     }
+  }
+
+  /** Broadcast the effect of an erase / undo / redo. */
+  private applyChange(ws: Ws, change: Change | null, pageId?: string): void {
+    if (!change) {
+      if (pageId && pageId !== this.notebook.page.id) {
+        this.send(ws, { type: "error", code: "unknown_page", message: `no page ${pageId}` });
+      }
+      return;
+    }
+    if (change.removed) this.broadcast({ type: "strokes.removed", ...change.removed });
+    if (change.restored.length) this.broadcast({ type: "strokes.restored", strokes: change.restored });
+    this.broadcast({ type: "history", ...this.notebook.history() });
   }
 
   private hello(ws: Ws, msg: Extract<ClientMsg, { type: "hello" }>): void {
@@ -201,6 +230,7 @@ export class Hub {
     });
     this.send(ws, { type: "settings", ink: this.ink });
     this.send(ws, { type: "snapshot", ...this.notebook.snapshot() });
+    this.send(ws, { type: "history", ...this.notebook.history() });
     if (msg.role === "viewer") {
       this.sendDevices(ws);
     }

@@ -25,8 +25,8 @@ afterAll(async () => {
 });
 
 /** Minimal test client that queues incoming messages. */
-async function client(host = "localhost") {
-  const ws = new WebSocket(`ws://${host}:${app.port}/ws`);
+async function client(host = "localhost", port = app.port) {
+  const ws = new WebSocket(`ws://${host}:${port}/ws`);
   const queue: ServerMsg[] = [];
   const waiters: ((m: ServerMsg) => void)[] = [];
   let closed: { code: number } | null = null;
@@ -173,27 +173,30 @@ describe("server", () => {
     expect(res.status).toBe(400);
   });
 
-  test("pad strokes stream live to viewers and are in the next snapshot", async () => {
+  test("pad strokes stream live to viewers, are acked and in the next snapshot", async () => {
     const viewer = await client();
     viewer.send(hello("viewer"));
     await viewer.expect("welcome");
     expect((await viewer.expect("settings")).ink).toEqual(DEFAULT_INK);
     const snap = await viewer.expect("snapshot");
-    expect(snap.page).toMatchObject({ id: "page-1", width: 2100, height: 2970 });
+    expect(snap.page).toMatchObject({ width: 2100, height: 2970 });
+    const pageId = snap.page.id;
 
     const pad = await client();
     pad.send(hello("pad"));
     await pad.expect("welcome");
-    const padSnap = await pad.expect("snapshot");
+    expect((await pad.expect("snapshot")).page.id).toBe(pageId);
 
     const id = "stroke-live-1";
-    pad.send({ type: "stroke.begin", id, pageId: padSnap.page.id, tool: "pen", color: "#112233", width: 10 });
+    pad.send({ type: "stroke.begin", id, pageId, tool: "pen", color: "#112233", width: 10 });
     expect(await viewer.expect("stroke.begin")).toMatchObject({ id, color: "#112233" });
     pad.send({ type: "stroke.points", id, pts: [10, 20, 0.3, 0, 30, 40, 0.35, 4] });
     expect((await viewer.expect("stroke.points")).pts).toEqual([10, 20, 0.3, 0, 30, 40, 0.35, 4]);
     pad.send({ type: "stroke.end", id, n: 2 });
+    expect(await pad.expect("stroke.ack")).toEqual({ type: "stroke.ack", id });
     const added = await viewer.expect("stroke.added");
-    expect(added.stroke).toMatchObject({ id, pageId: "page-1", pts: [10, 20, 0.3, 0, 30, 40, 0.35, 4] });
+    expect(added.stroke).toMatchObject({ id, pageId, pts: [10, 20, 0.3, 0, 30, 40, 0.35, 4] });
+    expect((await viewer.expect("history")).canUndo).toBe(true);
 
     // A newcomer gets the committed stroke in its snapshot.
     const late = await client();
@@ -201,15 +204,80 @@ describe("server", () => {
     expect((await late.expect("snapshot")).strokes.map((s) => s.id)).toContain(id);
 
     // Viewers can't draw.
-    viewer.send({ type: "stroke.begin", id: "v", pageId: "page-1", tool: "pen", color: "#000000", width: 1 });
+    viewer.send({ type: "stroke.begin", id: "v", pageId, tool: "pen", color: "#000000", width: 1 });
     expect((await viewer.expect("error")).code).toBe("forbidden");
 
-    // Clear → everyone gets an empty snapshot.
-    viewer.send({ type: "page.clear", pageId: "page-1" });
-    expect((await pad.expect("snapshot")).strokes).toEqual([]);
-    expect((await late.expect("snapshot")).strokes).toEqual([]);
+    // Clear → everyone removes the strokes; undo brings them back.
+    viewer.send({ type: "page.clear", pageId });
+    expect((await pad.expect("strokes.removed")).ids).toContain(id);
+    expect((await late.expect("strokes.removed")).ids).toContain(id);
+    pad.send({ type: "undo" });
+    expect((await viewer.expect("strokes.restored")).strokes.map((s) => s.id)).toContain(id);
 
     for (const c of [pad, viewer, late]) c.ws.close();
+  });
+
+  test("a resent stroke (reconnect) is acked but stored once", async () => {
+    const pad = await client();
+    pad.send(hello("pad"));
+    const pageId = (await pad.expect("snapshot")).page.id;
+    const stroke = (id: string, n = 1) => {
+      pad.send({ type: "stroke.begin", id, pageId, tool: "pen", color: "#000000", width: 10 });
+      pad.send({ type: "stroke.points", id, pts: [5, 5, 0.3, 0] });
+      pad.send({ type: "stroke.end", id, n });
+    };
+    stroke("dup");
+    await pad.expect("stroke.ack");
+    pad.ws.close();
+
+    const again = await client();
+    again.send(hello("pad"));
+    const before = (await again.expect("snapshot")).strokes.length;
+    again.send({ type: "stroke.begin", id: "dup", pageId, tool: "pen", color: "#000000", width: 10 });
+    expect(await again.expect("stroke.ack")).toEqual({ type: "stroke.ack", id: "dup" });
+    expect(app.hub.notebook.strokeCount).toBe(before);
+    again.ws.close();
+  });
+
+  test("missing points → resync request, nothing stored", async () => {
+    const pad = await client();
+    pad.send(hello("pad"));
+    const pageId = (await pad.expect("snapshot")).page.id;
+    const count = app.hub.notebook.strokeCount;
+    pad.send({ type: "stroke.begin", id: "gap", pageId, tool: "pen", color: "#000000", width: 10 });
+    pad.send({ type: "stroke.points", id: "gap", pts: [5, 5, 0.3, 0] });
+    pad.send({ type: "stroke.end", id: "gap", n: 3 });
+    expect(await pad.expect("stroke.resync")).toEqual({ type: "stroke.resync", id: "gap" });
+    expect(app.hub.notebook.strokeCount).toBe(count);
+    pad.ws.close();
+  });
+
+  test("erase gesture is broadcast and undone as one step", async () => {
+    const pad = await client();
+    pad.send(hello("pad"));
+    const pageId = (await pad.expect("snapshot")).page.id;
+    for (const id of ["e1", "e2"]) {
+      pad.send({ type: "stroke.begin", id, pageId, tool: "pen", color: "#000000", width: 10 });
+      pad.send({ type: "stroke.points", id, pts: [5, 5, 0.3, 0] });
+      pad.send({ type: "stroke.end", id, n: 1 });
+      await pad.expect("stroke.ack");
+    }
+    const viewer = await client();
+    viewer.send(hello("viewer"));
+    await viewer.expect("snapshot");
+
+    pad.send({ type: "erase", pageId, strokeIds: ["e1"], group: "g" });
+    expect((await viewer.expect("strokes.removed")).ids).toEqual(["e1"]);
+    pad.send({ type: "erase", pageId, strokeIds: ["e2"], group: "g" });
+    expect((await viewer.expect("strokes.removed")).ids).toEqual(["e2"]);
+    viewer.send({ type: "undo" });
+    expect((await pad.expect("strokes.restored")).strokes.map((s) => s.id)).toEqual(["e1", "e2"]);
+    expect(await pad.expect("history")).toMatchObject({ canRedo: true });
+
+    pad.send({ type: "erase", pageId: "nope", strokeIds: ["e1"] });
+    expect((await pad.expect("error")).code).toBe("unknown_page");
+    pad.ws.close();
+    viewer.ws.close();
   });
 
   test("a pad disconnecting mid-stroke cancels it on viewers", async () => {
@@ -218,21 +286,22 @@ describe("server", () => {
     await viewer.expect("snapshot");
     const pad = await client();
     pad.send(hello("pad"));
-    await pad.expect("snapshot");
-    pad.send({ type: "stroke.begin", id: "half", pageId: "page-1", tool: "pen", color: "#000000", width: 10 });
+    const pageId = (await pad.expect("snapshot")).page.id;
+    pad.send({ type: "stroke.begin", id: "half", pageId, tool: "pen", color: "#000000", width: 10 });
     await viewer.expect("stroke.begin");
     pad.ws.close();
     expect((await viewer.expect("stroke.cancel")).id).toBe("half");
     viewer.ws.close();
   });
 
-  test("stale page id gets the current snapshot back", async () => {
+  test("stale page id: stroke dropped from the outbox, current snapshot sent", async () => {
     const pad = await client();
     pad.send(hello("pad"));
-    await pad.expect("snapshot");
+    const pageId = (await pad.expect("snapshot")).page.id;
     pad.send({ type: "stroke.begin", id: "x", pageId: "old-page", tool: "pen", color: "#000000", width: 10 });
     expect((await pad.expect("error")).code).toBe("unknown_page");
-    expect((await pad.expect("snapshot")).page.id).toBe("page-1");
+    expect((await pad.expect("stroke.ack")).id).toBe("x");
+    expect((await pad.expect("snapshot")).page.id).toBe(pageId);
     pad.ws.close();
   });
 
@@ -253,5 +322,34 @@ describe("server", () => {
     await a.expect("settings");
     a.ws.close();
     b.ws.close();
+  });
+
+  test("notes survive a server restart", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "note-taker-restart-"));
+    try {
+      const opts = { port: 0, token: TOKEN, adb: false, dataDir: dir, log: () => {} } as const;
+      let srv = startServer(opts);
+      let pad = await client("localhost", srv.port);
+      pad.send(hello("pad"));
+      const pageId = (await pad.expect("snapshot")).page.id;
+      pad.send({ type: "stroke.begin", id: "keep", pageId, tool: "pen", color: "#000000", width: 10 });
+      pad.send({ type: "stroke.points", id: "keep", pts: [7, 8, 0.3, 0] });
+      pad.send({ type: "stroke.end", id: "keep", n: 1 });
+      await pad.expect("stroke.ack");
+      pad.ws.close();
+      await srv.stop();
+
+      srv = startServer(opts);
+      pad = await client("localhost", srv.port);
+      pad.send(hello("pad"));
+      const snap = await pad.expect("snapshot");
+      expect(snap.page.id).toBe(pageId);
+      expect(snap.strokes).toMatchObject([{ id: "keep", pts: [7, 8, 0.3, 0] }]);
+      expect((await pad.expect("history")).canUndo).toBe(true);
+      pad.ws.close();
+      await srv.stop();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

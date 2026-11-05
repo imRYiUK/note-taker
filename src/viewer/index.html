@@ -33,10 +33,6 @@
         border-color: var(--accent);
         color: var(--accent);
       }
-      header button.danger {
-        border-color: var(--bad);
-        color: var(--bad);
-      }
       .sep {
         width: 1px;
         align-self: stretch;
@@ -261,6 +257,9 @@
         font-size: 13px;
         display: none;
       }
+      #toast.info {
+        border-color: var(--border);
+      }
     </style>
   </head>
   <body>
@@ -269,7 +268,9 @@
       <div class="sep"></div>
       <button id="fit" type="button" title="Toggle fit width / whole page (F)">Fit: width</button>
       <button id="follow" type="button" aria-pressed="true" title="Scroll to keep the pen in view">Follow pen</button>
-      <button id="clear" type="button" title="Remove all strokes from this page">Clear page</button>
+      <button id="undo" type="button" title="Undo (Ctrl+Z)" disabled>Undo</button>
+      <button id="redo" type="button" title="Redo (Ctrl+Shift+Z)" disabled>Redo</button>
+      <button id="clear" type="button" title="Remove all strokes from this page (undoable)">Clear page</button>
       <span style="margin-left: auto"></span>
       <div id="pad-status"><span class="dot"></span><span>no pad</span></div>
       <div class="sep"></div>

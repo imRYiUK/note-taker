@@ -1,9 +1,16 @@
-// Authoritative in-memory page state: committed strokes plus strokes being
-// drawn right now. M1 holds a single A4 page in memory; persistence (SQLite),
-// multiple pages and the undo stack arrive in M2/M4.
+// Authoritative notebook state: strokes being drawn right now (memory only),
+// committed strokes of the active page (SQLite, mirrored in memory) and the
+// shared undo/redo history. Single notebook / page until M4.
 
-import { A4, POINT_STRIDE } from "../shared/ink.ts";
-import { LIMITS, type PageInfo, type StrokeBeginMsg, type StrokeData } from "../shared/protocol.ts";
+import { POINT_STRIDE } from "../shared/ink.ts";
+import {
+  LIMITS,
+  type HistoryState,
+  type PageInfo,
+  type StrokeBeginMsg,
+  type StrokeData,
+} from "../shared/protocol.ts";
+import type { Op, Store } from "./store.ts";
 
 interface LiveStroke {
   owner: string; // client id that is drawing it
@@ -12,29 +19,60 @@ interface LiveStroke {
 
 export type BeginResult = "ok" | "duplicate" | "unknown_page";
 
-export interface EndResult {
-  stroke: StrokeData;
-  /** Points the pad says it sent minus points we received (0 = complete). */
-  missing: number;
+export type EndResult =
+  | { kind: "committed"; stroke: StrokeData }
+  /** Already stored (a resend after reconnect). */
+  | { kind: "duplicate" }
+  /** Point count doesn't match what the pad sent: dropped, the pad must resend it. */
+  | { kind: "resync"; missing: number };
+
+/** What an erase / undo / redo did, for broadcasting. */
+export interface Change {
+  removed: { pageId: string; ids: string[] } | null;
+  restored: StrokeData[];
 }
 
 export class Notebook {
-  readonly page: PageInfo = { id: "page-1", width: A4.width, height: A4.height };
+  readonly id: string;
+  readonly page: PageInfo;
+  /** Visible committed strokes of the active page, in paint order. */
   private readonly strokes = new Map<string, StrokeData>();
   private readonly live = new Map<string, LiveStroke>();
+  /** Stroke timestamps are strictly increasing, so they define paint order unambiguously. */
+  private lastCreatedAt: number;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly store: Store,
+    private readonly now: () => number = Date.now,
+  ) {
+    const { notebook, page } = store.openDefault(now());
+    this.id = notebook.id;
+    this.page = page;
+    for (const s of store.pageStrokes(page.id)) this.strokes.set(s.id, s);
+    this.lastCreatedAt = store.maxStrokeTime();
+  }
 
   snapshot(): { page: PageInfo; strokes: StrokeData[] } {
     return { page: { ...this.page }, strokes: [...this.strokes.values()] };
   }
 
+  history(): HistoryState {
+    return { canUndo: this.store.lastDone(this.id) !== null, canRedo: this.store.firstUndone(this.id) !== null };
+  }
+
+  get strokeCount(): number {
+    return this.strokes.size;
+  }
+
+  // ------------------------------------------------------------ live strokes
+
   begin(owner: string, msg: StrokeBeginMsg): BeginResult {
     if (msg.pageId !== this.page.id) return "unknown_page";
-    // Same id again (e.g. a resend after reconnect) — the stroke is known already.
-    if (this.strokes.has(msg.id)) return "duplicate";
-    const existing = this.live.get(msg.id);
-    if (existing && existing.owner !== owner) return "duplicate";
+    // Same id again after a reconnect, but the first copy is already stored.
+    if (this.store.hasStroke(msg.id)) return "duplicate";
+    // A live stroke with this id from another connection: the pad reconnected
+    // before the server noticed the old socket died. Ids are per-pad UUIDs, so
+    // the newer connection takes the stroke over and restarts it.
     this.live.set(msg.id, {
       owner,
       data: {
@@ -44,7 +82,7 @@ export class Notebook {
         color: msg.color,
         width: msg.width,
         pts: [],
-        createdAt: this.now(),
+        createdAt: 0, // assigned on commit
       },
     });
     return "ok";
@@ -59,15 +97,23 @@ export class Notebook {
     return true;
   }
 
-  /** Commit a live stroke. Null if unknown / not ours / empty. */
+  /** Commit a live stroke: stored together with its undo step. Null if unknown / not ours / empty. */
   end(owner: string, id: string, n: number): EndResult | null {
     const s = this.live.get(id);
-    if (!s || s.owner !== owner) return null;
+    if (!s || s.owner !== owner) return this.store.hasStroke(id) ? { kind: "duplicate" } : null;
     this.live.delete(id);
     const received = s.data.pts.length / POINT_STRIDE;
+    if (received !== n) return { kind: "resync", missing: n - received };
     if (received === 0) return null;
-    this.strokes.set(id, s.data);
-    return { stroke: s.data, missing: n - received };
+    const stroke = s.data;
+    stroke.createdAt = this.lastCreatedAt = Math.max(this.now(), this.lastCreatedAt + 1);
+    this.store.tx(() => {
+      this.store.insertStroke(stroke);
+      this.store.pushOp(this.id, "add", { pageId: stroke.pageId, ids: [stroke.id] });
+      this.store.touchNotebook(this.id, this.now());
+    });
+    this.strokes.set(id, stroke);
+    return { kind: "committed", stroke };
   }
 
   cancel(owner: string, id: string): boolean {
@@ -89,14 +135,74 @@ export class Notebook {
     return ids;
   }
 
-  /** Remove committed strokes. Strokes being drawn right now survive and commit normally. */
-  clear(pageId: string): boolean {
-    if (pageId !== this.page.id) return false;
-    this.strokes.clear();
-    return true;
+  // ------------------------------------------------------------ edits
+
+  /**
+   * Erase committed strokes. Ids that aren't visible are ignored. Erases with
+   * the same `group` (one eraser gesture) extend the previous op, so the whole
+   * gesture is a single undo step. Null when the page is unknown or nothing changed.
+   */
+  erase(pageId: string, ids: string[], group?: string): Change | null {
+    if (pageId !== this.page.id) return null;
+    const visible = [...new Set(ids)].filter((id) => this.strokes.has(id));
+    if (!visible.length) return null;
+    this.store.tx(() => {
+      this.store.setDeleted(visible, this.now());
+      const last = group ? this.store.lastOp(this.id) : null;
+      if (last && !last.undone && last.kind === "erase" && last.payload.group === group && last.payload.pageId === pageId) {
+        this.store.updateOpPayload(last.seq, { ...last.payload, ids: [...last.payload.ids, ...visible] });
+      } else {
+        this.store.pushOp(this.id, "erase", { pageId, ids: visible, ...(group ? { group } : {}) });
+      }
+      this.store.touchNotebook(this.id, this.now());
+    });
+    for (const id of visible) this.strokes.delete(id);
+    return { removed: { pageId, ids: visible }, restored: [] };
   }
 
-  get strokeCount(): number {
-    return this.strokes.size;
+  /** Erase every committed stroke on the page (one undo step). */
+  clear(pageId: string): Change | null {
+    if (pageId !== this.page.id) return null;
+    return this.erase(pageId, [...this.strokes.keys()]) ?? { removed: null, restored: [] };
+  }
+
+  undo(): Change | null {
+    const op = this.store.lastDone(this.id);
+    if (!op) return null;
+    // Undoing an add hides its strokes; undoing an erase brings them back.
+    return this.apply(op, op.kind === "add" ? "hide" : "show", true);
+  }
+
+  redo(): Change | null {
+    const op = this.store.firstUndone(this.id);
+    if (!op) return null;
+    return this.apply(op, op.kind === "add" ? "show" : "hide", false);
+  }
+
+  private apply(op: Op, action: "hide" | "show", undone: boolean): Change {
+    const { pageId, ids } = op.payload;
+    return this.store.tx(() => {
+      this.store.setUndone(op.seq, undone);
+      this.store.touchNotebook(this.id, this.now());
+      if (action === "hide") {
+        const changed = this.store.setDeleted(ids, this.now());
+        if (pageId === this.page.id) for (const id of changed) this.strokes.delete(id);
+        return { removed: changed.length ? { pageId, ids: changed } : null, restored: [] };
+      }
+      const changed = this.store.setDeleted(ids, null);
+      const restored = this.store.strokesById(changed);
+      if (pageId === this.page.id) {
+        for (const s of restored) this.strokes.set(s.id, s);
+        this.sortStrokes();
+      }
+      return { removed: null, restored };
+    });
+  }
+
+  /** Keep paint order = creation order after strokes come back. */
+  private sortStrokes(): void {
+    const sorted = [...this.strokes.values()].sort((a, b) => a.createdAt - b.createdAt);
+    this.strokes.clear();
+    for (const s of sorted) this.strokes.set(s.id, s);
   }
 }

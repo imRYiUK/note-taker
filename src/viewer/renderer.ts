@@ -83,6 +83,25 @@ export class PageView {
     this.scheduleLive();
   }
 
+  removeStrokes(ids: string[]): void {
+    let changed = false;
+    for (const id of ids) {
+      changed = this.strokes.delete(id) || changed;
+      this.paths.delete(id);
+    }
+    if (changed) this.redrawBase();
+  }
+
+  /** Strokes back from undo / redo, re-sorted into creation (= paint) order. */
+  restoreStrokes(strokes: StrokeData[]): void {
+    const add = strokes.filter((s) => s.pageId === this.page?.id);
+    if (!add.length) return;
+    const all = [...this.strokes.values(), ...add].sort((a, b) => a.createdAt - b.createdAt);
+    this.strokes.clear();
+    for (const s of all) this.strokes.set(s.id, s);
+    this.redrawBase();
+  }
+
   setInk(ink: InkSettings): void {
     this.ink = ink;
     this.paths.clear();

@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import padPage from "../pad/index.html";
@@ -8,6 +9,8 @@ import { DEFAULT_INK, type InkSettings } from "../shared/ink.ts";
 import { loadConfig, saveInkSettings, dataDir as defaultDataDir } from "./config.ts";
 import { AdbWatcher } from "./adb.ts";
 import { Hub, type WsData } from "./hub.ts";
+import { Notebook } from "./notebook.ts";
+import { Store } from "./store.ts";
 import { authorize, isLoopback, padUrls } from "./net.ts";
 
 export const VERSION = "0.0.1";
@@ -31,6 +34,12 @@ export function startServer(opts: ServerOptions) {
   const hostname = opts.hostname ?? "0.0.0.0";
   let port = opts.port;
 
+  mkdirSync(dir, { recursive: true });
+  const dbFile = join(dir, "notes.db");
+  const store = new Store(dbFile);
+  const notebook = new Notebook(store);
+  log(`notes: ${dbFile} (${notebook.strokeCount} strokes on the current page)`);
+
   // Filled in once the server is listening (port may be 0 → random).
   let hub!: Hub;
   const adb = opts.adb === false ? null : new AdbWatcher(() => port, () => hub?.broadcastDevices(), log);
@@ -43,6 +52,7 @@ export function startServer(opts: ServerOptions) {
     adb,
     log,
     helloTimeoutMs: opts.helloTimeoutMs,
+    notebook,
     ink: opts.ink ?? { ...DEFAULT_INK },
     onInkChange: opts.onInkChange,
   });
@@ -118,6 +128,8 @@ export function startServer(opts: ServerOptions) {
       message: (ws, msg) => hub.message(ws, msg),
       close: (ws) => hub.close(ws),
       perMessageDeflate: false, // latency over bandwidth
+      // Clients ping every 2 s: a silent socket is dead (e.g. Wi-Fi dropped) — free its live strokes.
+      idleTimeout: 15,
     },
   });
 
@@ -134,6 +146,7 @@ export function startServer(opts: ServerOptions) {
       adb?.stop();
       hub.dispose();
       await server.stop(true);
+      store.close();
     },
   };
 }
@@ -174,7 +187,7 @@ Env: NOTE_TAKER_PORT, NOTE_TAKER_CONFIG_DIR, NOTE_TAKER_DATA_DIR, NOTE_TAKER_DEV
       onInkChange: persistInk,
     });
   } catch (e) {
-    console.error(`[note-taker] could not start on port ${cfg.port}: ${(e as Error).message}`);
+    console.error(`[note-taker] could not start (port ${cfg.port}): ${(e as Error).message}`);
     process.exit(1);
   }
 
