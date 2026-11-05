@@ -1,7 +1,10 @@
 import { Connection, type ConnStatus } from "../shared/connection.ts";
 import { DEFAULT_INK, applyPressureCurve, type InkSettings } from "../shared/ink.ts";
-import type { AdbDevice, ClientInfo, HistoryState, NotebookState, PadUrls, ServerMsg } from "../shared/protocol.ts";
-import { StripOverlay } from "./overlay.ts";
+import type { AdbDevice, ClientInfo, HistoryState, NotebookState, PadLink, PadUrls, ServerMsg } from "../shared/protocol.ts";
+import { qrSvg } from "../shared/qr.ts";
+import { ExportDialog } from "./export.ts";
+import { LatencyHud } from "./hud.ts";
+import { PenCursor, StripOverlay } from "./overlay.ts";
 import { PageView, type FitMode } from "./renderer.ts";
 import { Sidebar } from "./sidebar.ts";
 
@@ -29,7 +32,10 @@ const view = new PageView($("#stage"));
 const strip = new StripOverlay(view, (rect) => {
   if (view.page) conn.send({ type: "viewport", pageId: view.page.id, rect });
 });
+const cursor = new PenCursor(view);
 const sidebar = new Sidebar($("#library"), (msg) => conn.send(msg));
+// Created right after `conn` (needs it); messages only arrive later.
+let hud: LatencyHud | null = null;
 let notebook: NotebookState | null = null;
 
 // ------------------------------------------------------------------ connection
@@ -53,6 +59,8 @@ const conn = new Connection("viewer", {
   },
   onMessage: (msg) => handle(msg),
 });
+hud = new LatencyHud($("#hud"), conn);
+$("#hud-toggle").addEventListener("click", () => hud?.toggle());
 
 function handle(msg: ServerMsg) {
   switch (msg.type) {
@@ -61,12 +69,16 @@ function handle(msg: ServerMsg) {
       renderUrls(msg.padUrls);
       void loadLatestProbe();
       break;
+    case "pairing":
+      renderUrls(msg.padUrls);
+      break;
     case "clients":
       renderClients(msg.clients);
       renderPadStatus(msg.clients);
       break;
     case "snapshot":
       view.setSnapshot(msg.page, msg.strokes, msg.notebook.template);
+      cursor.hide();
       strip.set(msg.viewport?.rect ?? null);
       setNotebook(msg);
       renderObserved();
@@ -88,6 +100,10 @@ function handle(msg: ServerMsg) {
       break;
     case "stroke.points":
       view.livePoints(msg.id, msg.pts);
+      hud?.points(msg);
+      break;
+    case "hover":
+      cursor.set(msg.from, msg.at);
       break;
     case "stroke.cancel":
       view.liveCancel(msg.id);
@@ -211,6 +227,9 @@ libraryBtn.addEventListener("click", () => setLibrary(Boolean(library.hidden)));
 $("#undo").addEventListener("click", () => conn.send({ type: "undo" }));
 $("#redo").addEventListener("click", () => conn.send({ type: "redo" }));
 
+const exporter = new ExportDialog($<HTMLDialogElement>("#export"), () => ({ notebook, page: view.page }), toast);
+$("#export-btn").addEventListener("click", () => exporter.open());
+
 // Clearing is one undo step, so no confirmation.
 $("#clear").addEventListener("click", () => {
   if (!view.page || !view.strokeCount) return;
@@ -248,6 +267,16 @@ document.addEventListener("keydown", (e) => {
     else gotoPage(e.key === "PageUp" ? -1 : 1);
     return;
   }
+  if (mod && !e.shiftKey && !e.altKey && key === "e") {
+    e.preventDefault();
+    exporter.toggle();
+    return;
+  }
+  if (mod && e.shiftKey && key === "l") {
+    e.preventDefault();
+    hud?.toggle();
+    return;
+  }
   if (mod || e.altKey) return;
   if (key === "f") setFit(view.fit === "width" ? "page" : "width");
   if (key === "b") setLibrary(Boolean(library.hidden));
@@ -256,6 +285,7 @@ document.addEventListener("keydown", (e) => {
 function renderPadStatus(clients: ClientInfo[]) {
   const pads = clients.filter((c) => c.role === "pad");
   const el = $("#pad-status");
+  hud?.setPad(pads[0]?.rtt ?? null, pads[0]?.transport.toUpperCase() ?? "");
   if (!pads.length) {
     el.replaceChildren(h("span", { class: "dot bad" }), h("span", {}, "no pad"));
     return;
@@ -399,10 +429,49 @@ function urlRow(url: string) {
   return h("div", { class: "url" }, h("code", { textContent: url, title: url }), copy);
 }
 
+/** The Wi-Fi link shown as QR code (the user can pick another interface). */
+let qrUrl: string | null = null;
+let lastUrls: PadUrls | null = null;
+
 function renderUrls(urls: PadUrls) {
+  lastUrls = urls;
   $("#usb-url").replaceChildren(urlRow(urls.usb));
+  if (!urls.lan.some((l) => l.url === qrUrl)) qrUrl = urls.lan[0]?.url ?? null;
   $("#lan-urls").replaceChildren(
-    ...(urls.lan.length ? urls.lan.map(urlRow) : [h("div", { class: "empty", textContent: "No LAN address (USB-only mode?)" })]),
+    ...(urls.lan.length ? urls.lan.map(lanRow) : [h("div", { class: "empty", textContent: "No LAN address (USB-only mode?)" })]),
+  );
+  renderQr(urls.lan.find((l) => l.url === qrUrl) ?? null);
+}
+
+function lanRow(l: PadLink) {
+  const row = urlRow(l.url);
+  row.classList.toggle("selected", l.url === qrUrl);
+  row.title = `${l.iface}${l.secure ? " · HTTPS" : ""}${l.warning ? ` · ${l.warning}` : ""}`;
+  const pick = h("button", { type: "button", textContent: l.iface, title: "Show this address as QR code" });
+  pick.addEventListener("click", () => {
+    qrUrl = l.url;
+    if (lastUrls) renderUrls(lastUrls);
+  });
+  row.prepend(pick);
+  if (l.warning) row.append(h("span", { class: "warn", textContent: "⚠", title: l.warning }));
+  return row;
+}
+
+function renderQr(link: PadLink | null) {
+  const el = $("#lan-qr");
+  el.hidden = !link;
+  if (!link) return el.replaceChildren();
+  // Generated by our own encoder from the URL's bytes — the URL text itself isn't in the markup.
+  el.innerHTML = qrSvg(link.url);
+  el.append(
+    h(
+      "p",
+      { class: "hint" },
+      `Scan with the phone's camera (${link.iface}). `,
+      link.secure
+        ? "HTTPS: wake lock and app install work."
+        : "Plain HTTP over Wi-Fi: no wake lock / app install — use USB, or run “note-taker mkcert” once.",
+    ),
   );
 }
 

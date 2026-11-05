@@ -2,6 +2,7 @@
 // the strip; double-click the page to put the strip there (snapped to the line).
 
 import type { Rect } from "../shared/ink.ts";
+import type { HoverPoint } from "../shared/protocol.ts";
 import { LINED, lineCount } from "../shared/templates.ts";
 import type { PageView } from "./renderer.ts";
 
@@ -21,7 +22,7 @@ export class StripOverlay {
     this.el.hidden = true;
     this.el.title = "Pad strip — drag to move (double-click the page to jump)";
     view.wrap.append(this.el);
-    view.onLayout = () => this.place();
+    view.layoutHooks.push(() => this.place());
 
     this.el.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 || !this.rect) return;
@@ -96,6 +97,74 @@ export class StripOverlay {
       top: `${r.y * k}px`,
       width: `${r.w * k}px`,
       height: `${r.h * k}px`,
+    });
+  }
+}
+
+// ------------------------------------------------------------------ pen cursor
+
+/** No hover update for this long: hide the cursor (a lost "leave"). */
+const CURSOR_TIMEOUT_MS = 3000;
+
+/**
+ * Where the pen hovers over the phone, shown on the PC page (M5): a dot in the
+ * ink colour sized like the stroke it would draw, or the eraser's ring. Lets
+ * you keep your eyes on the monitor (tablet mode, blank pad).
+ */
+export class PenCursor {
+  private readonly el = document.createElement("div");
+  private at: HoverPoint | null = null;
+  private from: string | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private lastReveal = 0;
+
+  constructor(private readonly view: PageView) {
+    this.el.className = "pen-cursor";
+    this.el.hidden = true;
+    view.wrap.append(this.el);
+    view.layoutHooks.push(() => this.place());
+  }
+
+  /** A pad's hover update. */
+  set(from: string, at: HoverPoint | null): void {
+    // Another pad leaving doesn't hide this one's cursor.
+    if (!at && this.from !== null && from !== this.from) return;
+    this.from = at ? from : null;
+    this.at = at && this.view.page?.id === at.pageId ? at : null;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = this.at ? setTimeout(() => this.hide(), CURSOR_TIMEOUT_MS) : null;
+    this.place();
+    // Following a hovering pen: scroll at most a few times per second.
+    const now = performance.now();
+    if (this.at && now - this.lastReveal > 250) {
+      this.lastReveal = now;
+      this.view.reveal({ y: this.at.y - 40, h: 80 });
+    }
+  }
+
+  hide(): void {
+    this.at = null;
+    this.from = null;
+    this.place();
+  }
+
+  private place(): void {
+    const a = this.at;
+    const page = this.view.page;
+    const inside = a && page && a.x >= -50 && a.y >= -50 && a.x <= page.width + 50 && a.y <= page.height + 50;
+    this.el.hidden = !inside;
+    if (!inside) return;
+    const k = this.view.pxPerUnit;
+    const eraser = a.tool === "eraser";
+    // Pen: a dot about as wide as its ink (never tiny); highlighter: its width; eraser: a ring.
+    const size = eraser ? 18 : Math.max(a.tool === "highlighter" ? 8 : 7, (a.width ?? 10) * k);
+    this.el.className = `pen-cursor ${a.tool}`;
+    Object.assign(this.el.style, {
+      left: `${a.x * k}px`,
+      top: `${a.y * k}px`,
+      width: `${size}px`,
+      height: `${size}px`,
+      color: a.color,
     });
   }
 }

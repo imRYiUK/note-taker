@@ -70,7 +70,7 @@ note-taker/
 │  │  ├─ hub.ts            # connection registry, broadcast, per-role routing
 │  │  ├─ store.ts          # SQLite schema + queries
 │  │  ├─ notebook.ts       # in-memory state, apply ops, undo/redo
-│  │  ├─ export.ts         # SVG + PDF (pdf-lib) export
+│  │  ├─ export.ts         # SVG + PDF export (built-in PDF writer: pdf.ts)
 │  │  ├─ adb.ts            # auto `adb reverse` when a device appears
 │  │  └─ net.ts            # LAN IP discovery, QR pairing URL
 │  ├─ pad/                 # phone client
@@ -96,7 +96,7 @@ note-taker/
    └─ protocol.test.ts
 ```
 
-Dependencies (kept minimal): `perfect-freehand`, `pdf-lib`, `qrcode`, (optional) `zod`.
+Dependencies (kept minimal): `perfect-freehand` only — PDF, QR and PNG are built in (M6).
 
 ---
 
@@ -310,8 +310,8 @@ mode switch (strip/tablet) · blank-pad toggle · page prev/next/new · connecti
 ## 10. Export
 
 - **SVG per page:** perfect-freehand outline → `<path d=…>`, template as background group.
-- **PDF per notebook:** `pdf-lib`, one page per note page, `drawSvgPath` for each stroke
-  (vector, small files). Page size A4; infinite pages split or scaled (option).
+- **PDF per notebook:** built-in writer (M6, no `pdf-lib`), one page per note page, each stroke a
+  filled vector path (small files). Page size A4; endless pages tall or split into A4 (option).
 - **PNG** (quick share): render page canvas → `toBlob`.
 - v3: Markdown export for Obsidian (`note.md` + `page-N.svg` embeds).
 
@@ -397,15 +397,35 @@ Each milestone ends with a working, usable state. Estimates assume part-time wor
 - **Done when:** you can keep a real class/meeting notebook across days.
 
 ### M5 — Polish of the writing experience (1–2 days)
-- [ ] Toolbar (auto-hide), colors, widths, highlighter (multiply blend, under ink).
-- [ ] Hover → PC cursor; tablet mode with blank-pad toggle.
-- [ ] Wake lock, fullscreen, landscape lock, PWA install.
-- [ ] Latency HUD + measured numbers recorded in README.
+- [x] Toolbar: pen / highlighter / eraser; palette (tap the active tool or the swatch) with 4 colours +
+      custom and 3 widths per tool, remembered on the pad. Auto-hides on pen-down (option in the palette);
+      tap the handle or swipe down from the top edge to bring it back. Highlighter: constant width,
+      `multiply` at 70 %, always painted under the ink (pad, viewer, SVG export).
+- [x] Hover → PC cursor (protocol 6 `hover`, throttled to the frame rate; dot in ink colour/width, eraser
+      ring; viewer follows it). Blank-pad toggle (◐): black screen, no ink, faint page outline — works in
+      tablet and strip mode. *Tablet mode still maps the whole page, not the viewer's visible area.*
+- [x] Wake lock (re-acquired after release), fullscreen on the first pen/finger tap (on pointer-up, never
+      mid-stroke), landscape lock in strip mode / free rotation in tablet mode, PWA manifest
+      (`display: fullscreen`) with server-drawn PNG icons (`/icons/pad-*.png`).
+- [x] Latency HUD (`Ctrl+Shift+L` or Panel → Latency HUD): clock sync via `pong.serverTime` (lowest-RTT
+      sample), `stroke.points` stamped with `at` / `lat` by the pad and `rx` by the server; median / p95 /
+      max per stage over 10 s, "Copy" puts the session as a Markdown table on the clipboard.
+- [ ] **On device:** measure with the HUD over USB and Wi-Fi and record the numbers in the README; check
+      that hover rate is good enough for the cursor; install the PWA from Chrome's menu.
 - **Done when:** it feels like a product, not a prototype.
 
 ### M6 — Export & Wi-Fi pairing (1 day)
-- [ ] SVG / PDF / PNG export.
-- [ ] QR pairing for Wi-Fi; LAN IP detection; optional mkcert HTTPS.
+- [x] SVG / PDF / PNG export. PDF is written by a small built-in writer (`src/server/pdf.ts`) instead of
+      `pdf-lib`: each note page is a Form XObject (perfect-freehand outlines as cubic paths, template as
+      hairlines / round-capped dots, highlighter via an ExtGState with `/BM /Multiply`), Flate-compressed.
+      Endless pages: one tall page, or `?split=1` → A4 sheets showing slices of the same form. PNG = the
+      page SVG rasterized in the viewer. Export dialog `Ctrl+E`; downloads named after the notebook.
+- [x] QR pairing for Wi-Fi: built-in QR encoder (`src/shared/qr.ts`, byte mode, level M, v1–10; checked
+      with `zbarimg`), in the viewer panel and `--qr` in the terminal. LAN IP detection ranks Wi-Fi > wired >
+      other > VPN, drops container bridges / link-local, and is re-checked every 5 s (protocol 7 `pairing`).
+- [x] Optional mkcert HTTPS: `scripts/note-taker mkcert`; with `<config>/tls/{cert,key}.pem` the same routes
+      are also served over HTTPS on port + 1 and LAN links use it (warning when the cert lacks the IP).
+- [ ] **On device:** export a real notebook to PDF; pair by QR over Wi-Fi (HTTP, then HTTPS with the CA installed).
 - **Done when:** a notebook exports to a clean vector PDF; phone pairs by QR.
 
 ### Later (v2/v3 backlog)

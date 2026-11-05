@@ -1,5 +1,6 @@
 // Browser-side WebSocket client shared by the pad and the viewer:
-// handshake, auto-reconnect with backoff, ping/pong RTT, token + device id.
+// handshake, auto-reconnect with backoff, ping/pong RTT, token + device id,
+// and an estimate of the server clock (for the latency HUD).
 
 import {
   CloseCode,
@@ -64,9 +65,13 @@ export function deviceId(): string {
   return id;
 }
 
+/** Clock-sync samples kept; the one with the lowest RTT wins (least queueing → least error). */
+const CLOCK_SAMPLES = 10;
+
 export class Connection {
   status: ConnStatus = "connecting";
   rtt: number | null = null;
+  private clock: { rtt: number; offset: number }[] = [];
   private ws: WebSocket | null = null;
   private retryMs = 250;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -86,6 +91,18 @@ export class Connection {
       if (this.status !== "open") this.reconnectNow();
     });
     window.addEventListener("online", () => this.reconnectNow());
+  }
+
+  /** A `performance.now()`-based time (e.g. an event's `timeStamp`) on the server clock; null until synced. */
+  serverTime(perf: number = performance.now()): number | null {
+    let best: { rtt: number; offset: number } | null = null;
+    for (const c of this.clock) if (!best || c.rtt < best.rtt) best = c;
+    return best ? perf + best.offset : null;
+  }
+
+  /** Worst-case error of `serverTime`, ms (half the best RTT); null until synced. */
+  get clockError(): number | null {
+    return this.clock.length ? Math.min(...this.clock.map((c) => c.rtt)) / 2 : null;
   }
 
   send(msg: ClientMsg): boolean {
@@ -123,10 +140,17 @@ export class Connection {
         case "ping":
           this.send({ type: "pong", t: msg.t });
           break;
-        case "pong":
-          this.rtt = Math.round((performance.now() - msg.t) * 10) / 10;
+        case "pong": {
+          const rtt = performance.now() - msg.t;
+          this.rtt = Math.round(rtt * 10) / 10;
+          if (typeof msg.serverTime === "number") {
+            // The server answered about half-way through the round trip.
+            this.clock.push({ rtt, offset: msg.serverTime - (msg.t + rtt / 2) });
+            if (this.clock.length > CLOCK_SAMPLES) this.clock.shift();
+          }
           this.events.onRtt?.(this.rtt);
           break;
+        }
       }
       this.events.onMessage?.(msg);
     };

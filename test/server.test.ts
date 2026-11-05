@@ -93,6 +93,7 @@ describe("server", () => {
     const welcome = await viewer.expect("welcome");
     expect(welcome.protocol).toBe(PROTOCOL_VERSION);
     expect(welcome.padUrls.usb).toBe(`http://localhost:${app.port}/pad`);
+    for (const l of welcome.padUrls.lan) expect(l.url).toEndWith(`/pad?token=${TOKEN}`);
     await viewer.expect("devices");
 
     const pad = await client();
@@ -103,8 +104,13 @@ describe("server", () => {
     while (!clients.some((c) => c.role === "pad")) clients = (await viewer.expect("clients")).clients;
     expect(clients.find((c) => c.role === "pad")).toMatchObject({ transport: "usb", deviceId: "pad-device" });
 
+    const before = performance.timeOrigin + performance.now();
     pad.send({ type: "ping", t: 42 });
-    expect(await pad.expect("pong")).toEqual({ type: "pong", t: 42 });
+    const pong = await pad.expect("pong");
+    expect(pong.t).toBe(42);
+    // Server clock for clock sync: epoch ms (same process here, so it brackets our clock).
+    expect(pong.serverTime).toBeGreaterThanOrEqual(before - 1);
+    expect(pong.serverTime).toBeLessThanOrEqual(performance.timeOrigin + performance.now() + 1);
 
     pad.ws.close();
     viewer.ws.close();
@@ -132,7 +138,7 @@ describe("server", () => {
     expect((await c.closed())?.code).toBe(CloseCode.helloTimeout);
   });
 
-  const lan = lanAddresses()[0];
+  const lan = lanAddresses()[0]?.address;
   test.skipIf(!lan)("LAN clients need the token", async () => {
     const bad = await client(lan);
     bad.send(hello("pad", "wrong"));
@@ -392,6 +398,18 @@ describe("server", () => {
     expect(svg.match(/<path d="M/g)?.length).toBeGreaterThanOrEqual(2); // ruling + the stroke
     expect((await fetch(`${app.url}/api/export/nope.svg`)).status).toBe(404);
 
+    // PDF of that page and of the whole notebook, with a download name.
+    const pagePdf = await fetch(`${app.url}/api/export/${snap.page.id}.pdf?download=1`);
+    expect(pagePdf.headers.get("content-type")).toBe("application/pdf");
+    expect(pagePdf.headers.get("content-disposition")).toMatch(/^attachment; filename=".+ - p\d+\.pdf"/);
+    expect(new TextDecoder().decode((await pagePdf.bytes()).subarray(0, 8))).toBe("%PDF-1.4");
+    const nbPdf = await fetch(`${app.url}/api/export/${snap.notebook.id}.pdf`);
+    expect(nbPdf.status).toBe(200);
+    const nbText = new TextDecoder("latin1").decode(await nbPdf.bytes());
+    expect(nbText).toContain(`/Count ${snap.pages.length}`);
+    expect((await fetch(`${app.url}/api/export/${snap.notebook.id}.svg`)).status).toBe(404); // SVG is per page
+    expect((await fetch(`${app.url}/api/export/${snap.page.id}.png`)).status).toBe(404);
+
     // Undo of that stroke takes everyone to its page.
     viewer.send({ type: "undo" });
     expect((await pad.expect("snapshot")).page.id).toBe(snap.page.id);
@@ -468,5 +486,71 @@ describe("server", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("server — M5", () => {
+  test("pen hover goes to viewers only and is cleared when the pad leaves", async () => {
+    const viewer = await client();
+    viewer.send(hello("viewer"));
+    const pageId = (await viewer.expect("snapshot")).page.id;
+    const pad = await client();
+    pad.send(hello("pad"));
+    const padId = (await pad.expect("welcome")).clientId;
+    const other = await client();
+    other.send(hello("pad"));
+    await other.expect("snapshot");
+
+    const at = { pageId, x: 500, y: 640.5, tool: "pen", color: "#1d1f2b", width: 10 };
+    pad.send({ type: "hover", at });
+    expect(await viewer.expect("hover")).toEqual({ type: "hover", from: padId, at } as never);
+    pad.send({ type: "hover", at: null });
+    expect((await viewer.expect("hover")).at).toBeNull();
+
+    // Viewers' hover is ignored (no pen there); other pads never get it.
+    viewer.send({ type: "hover", at });
+    pad.send({ type: "hover", at });
+    expect((await viewer.expect("hover")).from).toBe(padId);
+    await expect(other.expect("hover", 200)).rejects.toThrow();
+
+    pad.ws.close();
+    expect(await viewer.expect("hover")).toEqual({ type: "hover", from: padId, at: null });
+    for (const c of [viewer, other]) c.ws.close();
+  });
+
+  test("live points reach viewers with the server's receive time", async () => {
+    const viewer = await client();
+    viewer.send(hello("viewer"));
+    const pageId = (await viewer.expect("snapshot")).page.id;
+    const pad = await client();
+    pad.send(hello("pad"));
+    await pad.expect("snapshot");
+
+    const id = "stroke-latency";
+    pad.send({ type: "stroke.begin", id, pageId, tool: "highlighter", color: "#ffe14d", width: 56 });
+    expect((await viewer.expect("stroke.begin")).tool).toBe("highlighter");
+    const at = performance.timeOrigin + performance.now();
+    pad.send({ type: "stroke.points", id, pts: [10, 20, 0.3, 0], at, lat: 6.5 });
+    const fwd = await viewer.expect("stroke.points");
+    expect(fwd).toMatchObject({ at, lat: 6.5 });
+    expect(fwd.rx!).toBeGreaterThanOrEqual(at);
+    expect(fwd.rx! - at).toBeLessThan(1000);
+    pad.send({ type: "stroke.end", id, n: 1 });
+    expect((await viewer.expect("stroke.added")).stroke.tool).toBe("highlighter");
+    for (const c of [pad, viewer]) c.ws.close();
+  });
+
+  test("the pad is installable: manifest linked, icons served", async () => {
+    const html = await (await fetch(`${app.url}/pad`)).text();
+    const href = /<link rel="manifest" href="([^"]+)"/.exec(html)?.[1];
+    expect(href).toBeTruthy();
+    const manifest = await (await fetch(new URL(href!, `${app.url}/pad`))).json();
+    expect(manifest).toMatchObject({ start_url: "/pad", display: "fullscreen" });
+    for (const icon of manifest.icons as { src: string; type: string }[]) {
+      const res = await fetch(new URL(icon.src, `${app.url}/pad`));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe(icon.type);
+    }
+    expect((await fetch(`${app.url}/icons/nope.png`)).status).toBe(404);
   });
 });

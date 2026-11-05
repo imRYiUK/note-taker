@@ -3,12 +3,48 @@
 #   note-taker            server + viewer window
 #   note-taker --server   server only (foreground)
 #   note-taker --no-open  same as --server
+#   note-taker mkcert     create an HTTPS certificate for Wi-Fi pairing (needs mkcert)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 PORT="${NOTE_TAKER_PORT:-$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "${XDG_CONFIG_HOME:-$HOME/.config}/note-taker/config.json" 2>/dev/null || true)}"
 PORT="${PORT:-7777}"
 BASE="http://localhost:$PORT"
+CONFIG_DIR="${NOTE_TAKER_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/note-taker}"
+
+# HTTPS over Wi-Fi: a mkcert certificate for this PC's addresses. The phone must trust
+# mkcert's root CA once; the server then serves https on port+1 and the QR uses it.
+make_cert() {
+  command -v mkcert >/dev/null || { echo "mkcert not found — install it (e.g. 'sudo pacman -S mkcert')" >&2; exit 1; }
+  local dir="$CONFIG_DIR/tls"
+  mkdir -p "$dir"
+  local names=(localhost 127.0.0.1 ::1 "$(hostname).local")
+  # Non-loopback IPv4 addresses (the server lists the same ones as pairing links).
+  while read -r ip; do names+=("$ip"); done < <(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4, a, "/"); print a[1]}')
+  mkcert -install
+  mkcert -cert-file "$dir/cert.pem" -key-file "$dir/key.pem" "${names[@]}"
+  chmod 600 "$dir/key.pem"
+  local ca
+  ca="$(mkcert -CAROOT)/rootCA.pem"
+  cat <<EOT
+
+Certificate: $dir/cert.pem (${names[*]})
+Restart note-taker; Wi-Fi links become https://<ip>:$((PORT + 1))/pad?token=…
+
+Once, on the phone, trust mkcert's root CA:
+  1. Copy it over:  adb push "$ca" /sdcard/Download/note-taker-rootCA.pem
+     (or send the file any other way)
+  2. Settings → Security and privacy → More security settings → Install from device storage
+     → CA certificate → pick note-taker-rootCA.pem
+If the PC's IP changes (new network), run 'note-taker mkcert' again.
+EOT
+}
+
+if [[ "${1:-}" == mkcert ]]; then
+  make_cert
+  exit 0
+fi
+
 OPEN=1
 SERVER_ARGS=()
 for arg in "$@"; do

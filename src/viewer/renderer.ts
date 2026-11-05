@@ -1,11 +1,16 @@
 // Viewer page rendering: one page canvas with committed strokes (re-rasterized
 // only on resize / snapshot / settings change; new strokes are painted
 // incrementally) and a transparent live canvas on top for strokes still being
-// written, redrawn per animation frame inside a dirty rectangle.
+// written, redrawn per animation frame inside a dirty rectangle. Highlighter
+// strokes are multiplied onto the page under the ink; the live canvas itself
+// is blended with `multiply` (CSS), so live highlighter looks the same before
+// and after it is committed.
 
 import {
   DEFAULT_INK,
+  HIGHLIGHTER_ALPHA,
   POINT_STRIDE,
+  paintOrder,
   maxPressure,
   outlineBounds,
   strokeOutline,
@@ -14,7 +19,7 @@ import {
   type InkSettings,
   type Rect,
 } from "../shared/ink.ts";
-import type { PageInfo, StrokeBeginMsg, StrokeData, Template } from "../shared/protocol.ts";
+import type { PageInfo, StrokeBeginMsg, StrokeData, Template, Tool } from "../shared/protocol.ts";
 import { drawTemplate } from "../shared/templates.ts";
 
 export type FitMode = "width" | "page";
@@ -24,6 +29,7 @@ const PAPER = "#ffffff";
 
 interface Live {
   id: string;
+  tool: Tool;
   color: string;
   width: number;
   pts: number[];
@@ -53,8 +59,8 @@ export class PageView {
 
   /** Raw max pressure of recently committed strokes, newest last. */
   readonly recentPressure: number[] = [];
-  /** Called after the page is laid out again (scale changed). */
-  onLayout: (() => void) | null = null;
+  /** Called after the page is laid out again (scale changed): overlays re-place themselves. */
+  readonly layoutHooks: (() => void)[] = [];
 
   constructor(private readonly stage: HTMLElement) {
     this.wrap = document.createElement("div");
@@ -158,7 +164,7 @@ export class PageView {
 
   liveBegin(m: StrokeBeginMsg): void {
     if (m.pageId !== this.page?.id) return; // still writing on a page we've left
-    this.live.set(m.id, { id: m.id, color: m.color, width: m.width, pts: [] });
+    this.live.set(m.id, { id: m.id, tool: m.tool, color: m.color, width: m.width, pts: [] });
   }
 
   livePoints(id: string, pts: number[]): void {
@@ -193,12 +199,14 @@ export class PageView {
     c.setTransform(k, 0, 0, k, 0, 0);
     for (const l of this.live.values()) {
       if (!l.pts.length) continue;
-      const outline = strokeOutline(l.pts, l.width, this.ink, false);
+      const outline = strokeOutline(l.pts, l.width, this.ink, false, undefined, l.tool);
       rect = unionRect(rect, outlineBounds(outline));
       const path = new Path2D();
       traceOutline(path, outline);
+      c.globalAlpha = l.tool === "highlighter" ? HIGHLIGHTER_ALPHA : 1;
       c.fillStyle = l.color;
       c.fill(path);
+      c.globalAlpha = 1;
     }
     this.liveRect = rect && {
       x: Math.floor(rect.x * k) - 2,
@@ -244,7 +252,7 @@ export class PageView {
     this.liveRect = null;
     this.redrawBase();
     this.scheduleLive();
-    this.onLayout?.();
+    for (const hook of this.layoutHooks) hook();
   }
 
   private redrawBase(): void {
@@ -256,20 +264,31 @@ export class PageView {
     const k = this.scale * this.dpr;
     c.setTransform(k, 0, 0, k, 0, 0);
     drawTemplate(c, this.template, this.page, k);
-    for (const s of this.strokes.values()) this.paintStroke(s);
+    for (const s of paintOrder(this.strokes.values())) this.paintStroke(s);
   }
 
   private paintStroke(s: StrokeData): void {
     let path = this.paths.get(s.id);
     if (!path) {
       path = new Path2D();
-      traceOutline(path, strokeOutline(s.pts, s.width, this.ink, true));
+      traceOutline(path, strokeOutline(s.pts, s.width, this.ink, true, undefined, s.tool));
       this.paths.set(s.id, path);
     }
+    const c = this.bctx;
     const k = this.scale * this.dpr;
-    this.bctx.setTransform(k, 0, 0, k, 0, 0);
-    this.bctx.fillStyle = s.color;
-    this.bctx.fill(path);
+    c.setTransform(k, 0, 0, k, 0, 0);
+    // Added later on top of ink, a multiplied highlighter still looks like it's underneath.
+    const hl = s.tool === "highlighter";
+    if (hl) {
+      c.globalCompositeOperation = "multiply";
+      c.globalAlpha = HIGHLIGHTER_ALPHA;
+    }
+    c.fillStyle = s.color;
+    c.fill(path);
+    if (hl) {
+      c.globalCompositeOperation = "source-over";
+      c.globalAlpha = 1;
+    }
   }
 
   private notePressure(pts: number[]): void {

@@ -2,9 +2,15 @@
 // mapping) or a magnified window onto it (zoom strip, `setView`). Two layers: an offscreen bitmap of committed strokes, and the live stroke,
 // which is redrawn every frame inside a dirty rectangle on a low-latency
 // (desynchronized) canvas.
+//
+// Highlighter strokes are multiplied onto the page under the pen ink. Blank-pad
+// mode (M5) shows no paper and no ink — just a faint page outline on black —
+// for writing while looking at the PC (saves battery on OLED).
 
 import {
   DEFAULT_INK,
+  HIGHLIGHTER_ALPHA,
+  paintOrder,
   strokeOutline,
   traceOutline,
   outlineBounds,
@@ -13,14 +19,17 @@ import {
   type Rect,
 } from "../shared/ink.ts";
 import { hitsStroke, pointsBounds } from "../shared/hit.ts";
-import type { PageInfo, StrokeData, Template } from "../shared/protocol.ts";
+import type { PageInfo, StrokeData, Template, Tool } from "../shared/protocol.ts";
 import { drawTemplate } from "../shared/templates.ts";
 
 const MARGIN = 10; // CSS px around the page in tablet mapping
 const SURROUND = "#121214";
 const PAPER = "#ffffff";
+const BLANK = "#000000";
+const BLANK_EDGE = "#2a2a30";
 
 export interface LiveInk {
+  tool: Tool;
   pts: number[];
   /** Predicted points: drawn now, never stored. */
   tail: number[];
@@ -45,6 +54,8 @@ export class PadCanvas {
 
   /** Page-unit window shown on screen (strip mode); null = whole page (tablet mapping). */
   private view: Rect | null = null;
+  /** Blank pad: nothing but a faint page outline is drawn. */
+  private blank = false;
 
   // Layout: page unit → CSS px is `x * scale + ox`.
   private dpr = 1;
@@ -95,6 +106,11 @@ export class PadCanvas {
     if (s.pageId !== this.page?.id || this.strokes.some((x) => x.id === s.id)) return;
     this.strokes.push(s);
     if (this.stale) return this.redrawAll();
+    if (this.blank) {
+      this.blit(this.liveRect);
+      this.liveRect = null;
+      return;
+    }
     const { path, bounds } = this.path(s);
     this.paintStroke(this.cctx, s, path);
     this.blit(unionRect(this.deviceRect(bounds), this.liveRect));
@@ -136,6 +152,12 @@ export class PadCanvas {
       if (hitsStroke({ pts: s.pts, width: s.width, bounds }, ax, ay, bx, by, r)) hits.push(s.id);
     }
     return hits;
+  }
+
+  setBlank(blank: boolean): void {
+    if (blank === this.blank) return;
+    this.blank = blank;
+    this.redrawAll();
   }
 
   setInk(ink: InkSettings): void {
@@ -195,7 +217,7 @@ export class PadCanvas {
     // The canvas is desynchronized: Chrome may show it mid-drawing, so never
     // paint a pixel twice — fill only the bands the bitmap doesn't cover.
     c.setTransform(1, 0, 0, 1, 0, 0);
-    c.fillStyle = PAPER;
+    c.fillStyle = this.blank ? BLANK : PAPER;
     if (y0 > 0) c.fillRect(0, 0, W, Math.ceil(y0));
     if (y1 < H) c.fillRect(0, Math.floor(y1), W, H - Math.floor(y1));
     const top = Math.max(0, Math.floor(y0));
@@ -253,23 +275,19 @@ export class PadCanvas {
   /** Draw the in-progress stroke (call once per animation frame). */
   drawLive(live: LiveInk | null): void {
     if (this.stale) this.redrawAll();
-    if (!live || !live.pts.length) {
+    if (!live || !live.pts.length || this.blank) {
       this.blit(this.liveRect);
       this.liveRect = null;
       return;
     }
-    const outline = strokeOutline(live.pts, live.width, this.ink, false, live.tail);
+    const outline = strokeOutline(live.pts, live.width, this.ink, false, live.tail, live.tool);
     const rect = this.deviceRect(outlineBounds(outline));
     this.blit(unionRect(rect, this.liveRect));
     this.liveRect = rect;
 
     const path = new Path2D();
     traceOutline(path, outline);
-    this.ctx.save();
-    this.clipToPage(this.ctx);
-    this.ctx.fillStyle = live.color;
-    this.ctx.fill(path);
-    this.ctx.restore();
+    this.fillInk(this.ctx, live.tool, live.color, path);
   }
 
   /** Eraser ring at (x, y) page units, radius r; null hides it. Uses the live layer. */
@@ -303,15 +321,20 @@ export class PadCanvas {
     this.sharpenTimer = null;
     const c = this.cctx;
     c.setTransform(1, 0, 0, 1, 0, 0);
-    c.fillStyle = SURROUND;
+    c.fillStyle = this.blank ? BLANK : SURROUND;
     c.fillRect(0, 0, this.committed.width, this.committed.height);
-    if (this.page) {
+    if (this.page && this.blank) {
+      this.setPageTransform(c);
+      c.strokeStyle = BLANK_EDGE;
+      c.lineWidth = 1.5 / this.scale;
+      c.strokeRect(0, 0, this.page.width, this.page.height);
+    } else if (this.page) {
       this.setPageTransform(c);
       c.fillStyle = PAPER;
       c.fillRect(0, 0, this.page.width, this.page.height);
       const vis = this.visibleRect();
       drawTemplate(c, this.template, this.page, this.scale * this.dpr, vis);
-      for (const s of this.strokes) {
+      for (const s of paintOrder(this.strokes)) {
         const { path, bounds } = this.path(s);
         if (bounds && intersects(bounds, vis, s.width)) this.paintStroke(c, s, path);
       }
@@ -322,9 +345,21 @@ export class PadCanvas {
   }
 
   private paintStroke(c: CanvasRenderingContext2D, s: StrokeData, path: Path2D): void {
+    this.fillInk(c, s.tool, s.color, path);
+  }
+
+  /**
+   * Fill a stroke clipped to the page. A highlighter is multiplied onto what's
+   * there, so adding one over existing ink still looks like it went under it.
+   */
+  private fillInk(c: CanvasRenderingContext2D, tool: Tool, color: string, path: Path2D): void {
     c.save();
     this.clipToPage(c);
-    c.fillStyle = s.color;
+    if (tool === "highlighter") {
+      c.globalCompositeOperation = "multiply";
+      c.globalAlpha = HIGHLIGHTER_ALPHA;
+    }
+    c.fillStyle = color;
     c.fill(path);
     c.restore();
   }
@@ -332,7 +367,7 @@ export class PadCanvas {
   private path(s: StrokeData): { path: Path2D; bounds: Rect | null } {
     let p = this.paths.get(s.id);
     if (!p) {
-      const outline = strokeOutline(s.pts, s.width, this.ink, true);
+      const outline = strokeOutline(s.pts, s.width, this.ink, true, undefined, s.tool);
       const path = new Path2D();
       traceOutline(path, outline);
       p = { path, bounds: outlineBounds(outline) };

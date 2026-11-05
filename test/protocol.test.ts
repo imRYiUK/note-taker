@@ -90,6 +90,31 @@ describe("parseClientMsg", () => {
     expect(parseClientMsg(j({ type: "page.clear", pageId: "page-1" }))).toEqual({ type: "page.clear", pageId: "page-1" });
   });
 
+  test("latency stamps on stroke.points (M5)", () => {
+    const pts = { type: "stroke.points", id: "s1", pts: [1, 2, 0.3, 4] };
+    expect(parseClientMsg(j({ ...pts, at: 1_762_300_000_000.5, lat: 7.2 }))).toEqual({ ...pts, at: 1_762_300_000_000.5, lat: 7.2 } as never);
+    expect(parseClientMsg(j({ ...pts, at: "now" }))).toBeNull();
+    expect(parseClientMsg(j({ ...pts, lat: -1 }))).toBeNull();
+    // `rx` is the server's to set: a client's is dropped.
+    expect(parseClientMsg(j({ ...pts, rx: 5 }))).toEqual(pts as never);
+  });
+
+  test("hover (M5)", () => {
+    const at = { pageId: "page-1", x: 120.5, y: 300, tool: "pen", color: "#1d1f2b", width: 10 };
+    expect(parseClientMsg(j({ type: "hover", at }))).toEqual({ type: "hover", at } as never);
+    expect(parseClientMsg(j({ type: "hover", at: null }))).toEqual({ type: "hover", at: null });
+    const { width: _, ...noWidth } = at;
+    expect(parseClientMsg(j({ type: "hover", at: { ...noWidth, tool: "eraser" } }))).toEqual({
+      type: "hover",
+      at: { ...noWidth, tool: "eraser" },
+    } as never);
+    expect(parseClientMsg(j({ type: "hover" }))).toBeNull();
+    expect(parseClientMsg(j({ type: "hover", at: { ...at, tool: "laser" } }))).toBeNull();
+    expect(parseClientMsg(j({ type: "hover", at: { ...at, x: 1e9 } }))).toBeNull();
+    expect(parseClientMsg(j({ type: "hover", at: { ...at, color: "blue" } }))).toBeNull();
+    expect(parseClientMsg(j({ type: "hover", at: { ...at, width: 0 } }))).toBeNull();
+  });
+
   test("settings.set is partial and clamped", () => {
     expect(parseClientMsg(j({ type: "settings.set", ink: { pressureMax: 9 } }))).toEqual({
       type: "settings.set",

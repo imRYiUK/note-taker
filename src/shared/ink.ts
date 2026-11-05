@@ -14,6 +14,29 @@ export const DEFAULT_PEN_COLOR = "#1d1f2b";
 /** Pen diameter at mid pressure, page units. */
 export const DEFAULT_PEN_WIDTH = 10;
 
+export type InkTool = "pen" | "highlighter";
+
+/** Toolbar presets per tool (M5): four colours (plus a custom one) and three widths. */
+export const TOOL_PRESETS: Record<InkTool, { colors: readonly string[]; widths: readonly number[] }> = {
+  pen: { colors: [DEFAULT_PEN_COLOR, "#2457c5", "#c8312b", "#1f8a4c"], widths: [6, DEFAULT_PEN_WIDTH, 16] },
+  // A writing line is 80 units (8 mm): the middle width covers most of it.
+  highlighter: { colors: ["#ffe14d", "#8ef08a", "#ff9bd2", "#8fd3ff"], widths: [36, 56, 80] },
+};
+
+/**
+ * Highlighter strokes are painted under the pen ink, blended with `multiply`
+ * at this opacity — overlapping highlights get darker, ink stays crisp.
+ */
+export const HIGHLIGHTER_ALPHA = 0.7;
+
+/** Paint order: every highlighter stroke first (under the ink), otherwise creation order. */
+export function paintOrder<T extends { tool: string }>(strokes: Iterable<T>): T[] {
+  const hl: T[] = [];
+  const ink: T[] = [];
+  for (const s of strokes) (s.tool === "highlighter" ? hl : ink).push(s);
+  return hl.length ? [...hl, ...ink] : ink;
+}
+
 // ------------------------------------------------------------- pressure curve
 
 export interface InkSettings {
@@ -61,13 +84,24 @@ export function applyPressureCurve(p: number, s: InkSettings): number {
 
 // ------------------------------------------------------------- outlines
 
-const STROKE_OPTIONS: StrokeOptions = {
-  thinning: 0.6,
-  smoothing: 0.5,
-  streamline: 0.3,
-  simulatePressure: false,
-  start: { cap: true, taper: 0 },
-  end: { cap: true, taper: 0 },
+const STROKE_OPTIONS: Record<InkTool, StrokeOptions> = {
+  pen: {
+    thinning: 0.6,
+    smoothing: 0.5,
+    streamline: 0.3,
+    simulatePressure: false,
+    start: { cap: true, taper: 0 },
+    end: { cap: true, taper: 0 },
+  },
+  // Felt tip: constant width whatever the pressure, steadier line.
+  highlighter: {
+    thinning: 0,
+    smoothing: 0.6,
+    streamline: 0.45,
+    simulatePressure: false,
+    start: { cap: true, taper: 0 },
+    end: { cap: true, taper: 0 },
+  },
 };
 
 export type Outline = [number, number][];
@@ -82,6 +116,7 @@ export function strokeOutline(
   ink: InkSettings,
   complete: boolean,
   tail?: ArrayLike<number>,
+  tool: InkTool = "pen",
 ): Outline {
   const input: number[][] = [];
   const push = (a: ArrayLike<number>) => {
@@ -91,7 +126,8 @@ export function strokeOutline(
   };
   push(pts);
   if (tail) push(tail);
-  return getStroke(input, { ...STROKE_OPTIONS, size: width, last: complete }) as Outline;
+  const opts = STROKE_OPTIONS[tool] ?? STROKE_OPTIONS.pen;
+  return getStroke(input, { ...opts, size: width, last: complete }) as Outline;
 }
 
 /** Anything with the canvas path API: a 2D context or a Path2D. */

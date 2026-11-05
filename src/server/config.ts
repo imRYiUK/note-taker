@@ -69,3 +69,18 @@ export async function saveInkSettings(ink: InkSettings): Promise<void> {
   const stored = await readStored(); // written by loadConfig at startup
   await writeStored({ ...(stored as Config), ink });
 }
+
+/**
+ * mkcert certificate for HTTPS over Wi-Fi: `<config>/tls/cert.pem` + `key.pem`
+ * (or NOTE_TAKER_TLS_CERT / NOTE_TAKER_TLS_KEY). Null when not set up.
+ */
+export async function loadTls(): Promise<{ cert: string; key: string } | null> {
+  const dir = join(configDir(), "tls");
+  const certFile = process.env.NOTE_TAKER_TLS_CERT ?? join(dir, "cert.pem");
+  const keyFile = process.env.NOTE_TAKER_TLS_KEY ?? join(dir, "key.pem");
+  try {
+    return { cert: await readFile(certFile, "utf8"), key: await readFile(keyFile, "utf8") };
+  } catch {
+    return null;
+  }
+}

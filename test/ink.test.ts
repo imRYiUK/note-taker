@@ -5,9 +5,11 @@ import {
   maxPressure,
   outlineBounds,
   outlineToSvgPath,
+  paintOrder,
   parseInkPatch,
   sanitizeInkSettings,
   strokeOutline,
+  TOOL_PRESETS,
   unionRect,
 } from "../src/shared/ink.ts";
 
@@ -107,4 +109,31 @@ test("unionRect and maxPressure", () => {
   expect(unionRect({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: -5, w: 10, h: 5 })).toEqual({ x: 0, y: -5, w: 15, h: 15 });
   expect(unionRect(null, { x: 1, y: 1, w: 1, h: 1 })).toEqual({ x: 1, y: 1, w: 1, h: 1 });
   expect(maxPressure([0, 0, 0.2, 0, 1, 1, 0.37, 4, 2, 2, 0.1, 8])).toBe(0.37);
+});
+
+describe("highlighter (M5)", () => {
+  test("constant width whatever the pressure", () => {
+    const h = (p: number) => outlineBounds(strokeOutline(line(p), 56, DEFAULT_INK, true, undefined, "highlighter"))!.h;
+    expect(h(0.05)).toBeCloseTo(h(0.4), 0);
+    expect(h(0.2)).toBeGreaterThan(50);
+    // The pen thins with light pressure.
+    const pen = (p: number) => outlineBounds(strokeOutline(line(p), 56, DEFAULT_INK, true))!.h;
+    expect(pen(0.05)).toBeLessThan(pen(0.4) * 0.8);
+  });
+
+  test("paint order puts highlighter under the ink, keeping creation order otherwise", () => {
+    const s = (id: string, tool: string) => ({ id, tool });
+    const order = paintOrder([s("a", "pen"), s("h1", "highlighter"), s("b", "pen"), s("h2", "highlighter")]);
+    expect(order.map((x) => x.id)).toEqual(["h1", "h2", "a", "b"]);
+    expect(paintOrder([s("a", "pen")]).map((x) => x.id)).toEqual(["a"]);
+  });
+
+  test("toolbar presets are valid wire colours and widths", () => {
+    for (const p of Object.values(TOOL_PRESETS)) {
+      expect(p.colors).toHaveLength(4);
+      expect(p.widths).toHaveLength(3);
+      for (const c of p.colors) expect(c).toMatch(/^#[0-9a-f]{6}$/i);
+      for (const w of p.widths) expect(w).toBeGreaterThan(0);
+    }
+  });
 });

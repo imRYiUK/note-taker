@@ -26,6 +26,9 @@ export interface WsData {
 
 type Ws = ServerWebSocket<WsData>;
 
+/** Server clock: epoch ms with sub-millisecond precision (clients sync to it via pong). */
+export const serverNow = () => performance.timeOrigin + performance.now();
+
 export interface HubOptions {
   token: string;
   padUrls: () => PadUrls;
@@ -75,6 +78,7 @@ export class Hub {
     if (ws.data.helloTimer) clearTimeout(ws.data.helloTimer);
     if (ws.data.info) {
       for (const id of this.library.dropLive(ws.data.id)) this.toViewers({ type: "stroke.cancel", id });
+      if (ws.data.info.role === "pad") this.toViewers({ type: "hover", from: ws.data.id, at: null });
       this.opts.log(`${ws.data.info.role} disconnected (${ws.data.info.transport}, ${ws.data.ip})`);
       this.broadcastClients();
     }
@@ -94,13 +98,17 @@ export class Hub {
 
     switch (msg.type) {
       case "ping":
-        this.send(ws, { type: "pong", t: msg.t });
+        this.send(ws, { type: "pong", t: msg.t, serverTime: serverNow() });
         break;
       case "pong":
         ws.data.info.rtt = Math.max(0, Math.round((performance.now() - msg.t) * 10) / 10);
         break;
       case "adb.open":
         void this.adbOpen(ws, msg);
+        break;
+      case "hover":
+        // Ephemeral: relayed to viewers, never stored. Viewers have no pen.
+        if (ws.data.info.role === "pad") this.toViewers({ type: "hover", from: ws.data.id, at: msg.at });
         break;
       case "stroke.begin":
       case "stroke.points":
@@ -214,7 +222,7 @@ export class Hub {
         break;
       }
       case "stroke.points":
-        if (nb.points(owner, msg.id, msg.pts)) this.toViewers(msg);
+        if (nb.points(owner, msg.id, msg.pts)) this.toViewers({ ...msg, rx: serverNow() });
         break;
       case "stroke.end": {
         const res = nb.end(owner, msg.id, msg.n);
@@ -351,6 +359,11 @@ export class Hub {
 
   broadcastClients(): void {
     this.toViewers({ type: "clients", clients: this.clients() });
+  }
+
+  /** Pairing links changed (LAN address came or went, certificate loaded). */
+  broadcastPairing(): void {
+    this.toViewers({ type: "pairing", padUrls: this.opts.padUrls() });
   }
 
   broadcastDevices(): void {

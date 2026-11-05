@@ -35,13 +35,12 @@ export function lineCount(page: Pick<PageInfo, "height">, r: Ruling = LINED): nu
   return Math.max(1, Math.floor((page.height - r.top - r.bottom) / r.lineHeight));
 }
 
-const RULE = "#c9d5e8";
-const MARGIN = "#efb4b4";
-const GRID = "#dbe3ef";
-const DOT = "#aab6c8";
+/** Template ink colours (shared by screen, SVG and PDF). */
+export const TEMPLATE_COLORS = { rule: "#c9d5e8", margin: "#efb4b4", grid: "#dbe3ef", dot: "#aab6c8" } as const;
+const { rule: RULE, margin: MARGIN, grid: GRID, dot: DOT } = TEMPLATE_COLORS;
 
 /** Grid / dot positions along one axis, aligned to `origin`, inside [lo, hi]. */
-function steps(origin: number, lo: number, hi: number, step = GRID_STEP): number[] {
+export function steps(origin: number, lo: number, hi: number, step = GRID_STEP): number[] {
   const out: number[] = [];
   for (let v = origin + Math.ceil((lo - origin) / step) * step; v <= hi; v += step) out.push(v);
   return out;

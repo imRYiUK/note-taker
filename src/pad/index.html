@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#121214" />
     <title>note-taker pad</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="../shared/base.css" />
     <style>
       html,
@@ -54,7 +55,7 @@
       #status-pending {
         color: #e6b23a;
       }
-      /* M2 toolbar: just what's needed until the full one (M5). */
+      /* Toolbar: collapses to the handle while writing (auto-hide), back with a tap / top-edge swipe. */
       #toolbar {
         position: fixed;
         top: max(6px, env(safe-area-inset-top));
@@ -68,6 +69,103 @@
         flex-wrap: wrap;
         /* Leave room for the status pill on the right. */
         max-width: calc(100vw - 150px);
+        transition:
+          opacity 140ms ease-out,
+          transform 140ms ease-out;
+      }
+      #toolbar.collapsed {
+        opacity: 0;
+        transform: translateY(-110%);
+        pointer-events: none;
+      }
+      #tb-handle {
+        position: fixed;
+        top: max(6px, env(safe-area-inset-top));
+        left: max(6px, env(safe-area-inset-left));
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 30px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 99px;
+        background: rgba(28, 28, 31, 0.6);
+        color: #ececef;
+        font-size: 13px;
+      }
+      .swatch {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.85);
+        box-sizing: border-box;
+        background: currentColor;
+      }
+      #palette {
+        position: fixed;
+        top: calc(max(6px, env(safe-area-inset-top)) + 48px);
+        left: max(6px, env(safe-area-inset-left));
+        display: grid;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(28, 28, 31, 0.94);
+        color: #ececef;
+        font-size: 13px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+      }
+      #palette .prow {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      #palette button,
+      #palette label.custom {
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        border-radius: 50%;
+        border: 2px solid transparent;
+        background: transparent;
+        display: grid;
+        place-items: center;
+        position: relative;
+      }
+      #palette [aria-pressed="true"] {
+        border-color: #6c9cff;
+      }
+      #palette .swatch {
+        width: 26px;
+        height: 26px;
+      }
+      #palette label.custom input {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        width: 100%;
+        height: 100%;
+      }
+      #palette label.custom .swatch {
+        background: conic-gradient(#f44, #fd4, #4d6, #4cf, #64f, #f4c, #f44);
+      }
+      #palette label.custom.set .swatch {
+        background: currentColor;
+      }
+      #palette .dot-w {
+        display: block;
+        border-radius: 50%;
+        background: #ececef;
+      }
+      #palette .opt {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: #c6c6cc;
+      }
+      #palette .opt input {
+        width: 18px;
+        height: 18px;
       }
       #page-label {
         min-width: 34px;
@@ -142,7 +240,9 @@
     <canvas id="ink"></canvas>
     <div id="toolbar">
       <button id="tool-pen" type="button" aria-pressed="true" title="Pen">✎</button>
+      <button id="tool-highlighter" type="button" aria-pressed="false" title="Highlighter">🖍</button>
       <button id="tool-eraser" type="button" aria-pressed="false" title="Stroke eraser">⌫</button>
+      <button id="style" type="button" title="Colour and width"><span class="swatch"></span></button>
       <span class="sep"></span>
       <button id="undo" type="button" title="Undo (two-finger tap)" disabled>↶</button>
       <button id="redo" type="button" title="Redo (three-finger tap)" disabled>↷</button>
@@ -150,11 +250,20 @@
       <button id="mode" type="button" title="Zoom strip / whole page">Strip</button>
       <button id="back" type="button" title="Strip: one step back">←</button>
       <button id="newline" type="button" title="Strip: next line (or tap the left edge)">↵</button>
+      <button id="blank" type="button" aria-pressed="false" title="Blank pad: no ink on the phone, watch the PC">◐</button>
       <span class="sep"></span>
       <button id="page-prev" type="button" title="Previous page" disabled>‹</button>
       <span id="page-label">–</span>
       <button id="page-next" type="button" title="Next page" disabled>›</button>
       <button id="page-new" type="button" title="New page after this one" disabled>＋</button>
+      <span class="sep"></span>
+      <button id="tb-hide" type="button" title="Hide toolbar (swipe down from the top edge to bring it back)">⌃</button>
+    </div>
+    <button id="tb-handle" type="button" title="Show toolbar" hidden><span class="swatch"></span><span id="tb-handle-tool">✎</span></button>
+    <div id="palette" hidden>
+      <div class="prow" id="pal-colors"></div>
+      <div class="prow" id="pal-widths"></div>
+      <label class="opt"><input id="autohide" type="checkbox" /> Hide toolbar while writing</label>
     </div>
     <button id="margin" type="button" aria-label="Next line" title="Next line"></button>
     <div id="status">

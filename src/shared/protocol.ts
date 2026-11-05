@@ -2,12 +2,14 @@
 // JSON over WebSocket. See PLAN.md §4. M0: handshake, liveness, device
 // management. M1: live strokes, page snapshot, ink settings. M2: stroke acks
 // (pad outbox), erase, undo/redo. M3: viewport (zoom-strip position).
-// M4: notebooks, pages, templates.
+// M4: notebooks, pages, templates. M5: pen hover → PC cursor, latency stamps,
+// server clock in pongs. M6: Wi-Fi pairing links, updated when the LAN changes.
 
 import { POINT_STRIDE, parseInkPatch, type InkSettings, type Rect } from "./ink.ts";
 
 // 2: M1 strokes, snapshot, settings · 3: M2 acks, erase, undo · 4: M3 viewport · 5: M4 notebooks & pages
-export const PROTOCOL_VERSION = 5;
+// 6: M5 hover, latency stamps · 7: M6 pairing links (interface, https), `pairing` updates
+export const PROTOCOL_VERSION = 7;
 export const DEFAULT_PORT = 7777;
 export const WS_PATH = "/ws";
 
@@ -33,9 +35,21 @@ export interface AdbDevice {
   reversed: boolean;
 }
 
+/** A Wi-Fi pairing link (shown as a QR code by the viewer). */
+export interface PadLink {
+  url: string;
+  /** Network interface the address belongs to (wlan0, enp3s0, …). */
+  iface: string;
+  /** HTTPS (mkcert certificate): a secure context on the phone — wake lock, PWA install. */
+  secure: boolean;
+  /** Something the user should know (e.g. the certificate doesn't cover this address). */
+  warning?: string;
+}
+
 export interface PadUrls {
   usb: string;
-  lan: string[];
+  /** Best guess first. */
+  lan: PadLink[];
 }
 
 export type Tool = "pen" | "highlighter";
@@ -104,7 +118,24 @@ export interface HistoryState {
 // ---------------------------------------------------------------- client → server
 
 export type StrokeBeginMsg = { type: "stroke.begin"; id: string; pageId: string; tool: Tool; color: string; width: number };
-export type StrokePointsMsg = { type: "stroke.points"; id: string; pts: number[] };
+/**
+ * Live points. Latency stamps (all optional, ms, used by the viewer's latency HUD):
+ * `at` = server-clock time of the newest sample (pad's clock-sync estimate),
+ * `lat` = the pad's own pen-event → local-ink time, `rx` = server receive time
+ * (added by the server when forwarding).
+ */
+export type StrokePointsMsg = { type: "stroke.points"; id: string; pts: number[]; at?: number; lat?: number; rx?: number };
+
+/** What the pen does on the PC: where it hovers (or erases), page units. */
+export interface HoverPoint {
+  pageId: string;
+  x: number;
+  y: number;
+  tool: Tool | "eraser";
+  color: string;
+  /** Ink width of the tool, page units (cursor size). */
+  width?: number;
+}
 export type StrokeCancelMsg = { type: "stroke.cancel"; id: string };
 
 export type ClientMsg =
@@ -133,16 +164,23 @@ export type ClientMsg =
   | { type: "notebook.open"; id: string }
   | { type: "notebook.new"; title: string; template: Template; kind: PageKind }
   | { type: "notebook.update"; id: string; title?: string; template?: Template }
-  | { type: "notebook.delete"; id: string };
+  | { type: "notebook.delete"; id: string }
+  /** Pen hovering (throttled to the frame rate); null = out of range / touching down. Pads only. */
+  | { type: "hover"; at: HoverPoint | null };
 
 // ---------------------------------------------------------------- server → client
 
 export type ServerMsg =
   | { type: "welcome"; clientId: string; protocol: number; serverTime: number; padUrls: PadUrls }
   | { type: "clients"; clients: ClientInfo[] }
+  /** The pairing links changed (LAN address appeared / went away); sent to viewers. */
+  | { type: "pairing"; padUrls: PadUrls }
   | { type: "devices"; devices: AdbDevice[]; adbAvailable: boolean }
   | { type: "ping"; t: number }
-  | { type: "pong"; t: number }
+  /** `serverTime`: server clock (epoch ms, sub-ms precision) when answering — for clock sync. */
+  | { type: "pong"; t: number; serverTime: number }
+  /** A pad's pen position, relayed to viewers (`from` = the pad's client id). */
+  | { type: "hover"; from: string; at: HoverPoint | null }
   /** A capability report posted by /probe (sent to viewers). */
   | { type: "probe.report"; file: string; report: unknown }
   /** Full state of the current page; sent after welcome and whenever another page becomes current. */
@@ -269,9 +307,33 @@ export function parseClientMsg(raw: string | Buffer): ClientMsg | null {
       if (!isId(v.id) || !isId(v.pageId) || (v.tool !== "pen" && v.tool !== "highlighter")) return null;
       if (!isColor(v.color) || !isNum(v.width) || v.width <= 0 || v.width > 500) return null;
       return { type: "stroke.begin", id: v.id, pageId: v.pageId, tool: v.tool, color: v.color, width: v.width };
-    case "stroke.points":
+    case "stroke.points": {
       if (!isId(v.id) || !isPointArray(v.pts)) return null;
-      return { type: "stroke.points", id: v.id, pts: v.pts };
+      const out: StrokePointsMsg = { type: "stroke.points", id: v.id, pts: v.pts };
+      if (v.at !== undefined) {
+        if (!isNum(v.at)) return null;
+        out.at = v.at;
+      }
+      if (v.lat !== undefined) {
+        if (!isNum(v.lat) || v.lat < 0 || v.lat > 60_000) return null;
+        out.lat = v.lat;
+      }
+      return out;
+    }
+    case "hover": {
+      if (v.at === null) return { type: "hover", at: null };
+      const a = v.at;
+      if (!isObj(a) || !isId(a.pageId) || !isNum(a.x) || !isNum(a.y)) return null;
+      if (Math.abs(a.x) > MAX_COORD || Math.abs(a.y) > MAX_COORD) return null;
+      if (a.tool !== "pen" && a.tool !== "highlighter" && a.tool !== "eraser") return null;
+      if (!isColor(a.color)) return null;
+      const at: HoverPoint = { pageId: a.pageId, x: a.x, y: a.y, tool: a.tool, color: a.color };
+      if (a.width !== undefined) {
+        if (!isNum(a.width) || a.width <= 0 || a.width > 500) return null;
+        at.width = a.width;
+      }
+      return { type: "hover", at };
+    }
     case "stroke.end":
       if (!isId(v.id) || !Number.isInteger(v.n) || (v.n as number) < 0) return null;
       return { type: "stroke.end", id: v.id, n: v.n as number };

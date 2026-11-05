@@ -10,19 +10,25 @@
 // Pages: the server decides which page is current (pad and viewer follow the
 // same one). A page switch that arrives mid-stroke waits for pen-up.
 //
+// M5: pen / highlighter / eraser with colour + width palette, toolbar that
+// hides while writing, blank-pad mode, pen hover → PC cursor, latency stamps
+// for the viewer's HUD, fullscreen + orientation lock on the first tap, PWA.
+//
 // Reliability: every finished stroke goes into an outbox (also kept in
 // localStorage) until the server acks it; after a reconnect the outbox is
 // re-sent and the server drops duplicates by stroke id.
 
 import { Connection, uid, type ConnStatus } from "../shared/connection.ts";
-import { DEFAULT_PEN_COLOR, DEFAULT_PEN_WIDTH, POINT_STRIDE, type Rect } from "../shared/ink.ts";
+import { POINT_STRIDE, TOOL_PRESETS, type InkTool, type Rect } from "../shared/ink.ts";
 import {
   LIMITS,
   type HistoryState,
+  type HoverPoint,
   type NotebookState,
   type PageInfo,
   type ServerMsg,
   type StrokeData,
+  type StrokePointsMsg,
   type Viewport,
 } from "../shared/protocol.ts";
 import { Strip, ZOOM_LIMITS, lerpRect } from "../shared/strip.ts";
@@ -298,40 +304,29 @@ $("#page-new").addEventListener("click", () => {
   if (!active && !erasing && pad.page) conn.send({ type: "page.new", afterPageId: pad.page.id });
 });
 
-// ------------------------------------------------------------------ toolbar
-
-type Tool = "pen" | "eraser";
-let tool: Tool = "pen";
-
-function setTool(t: Tool) {
-  tool = t;
-  $("#tool-pen").setAttribute("aria-pressed", String(t === "pen"));
-  $("#tool-eraser").setAttribute("aria-pressed", String(t === "eraser"));
-}
-$("#tool-pen").addEventListener("click", () => setTool("pen"));
-$("#tool-eraser").addEventListener("click", () => setTool(tool === "eraser" ? "pen" : "eraser"));
-
-function undo() {
-  if (!active && !erasing) conn.send({ type: "undo" });
-}
-function redo() {
-  if (!active && !erasing) conn.send({ type: "redo" });
-}
-$("#undo").addEventListener("click", undo);
-$("#redo").addEventListener("click", redo);
-
-// ------------------------------------------------------------------ zoom strip
+// ------------------------------------------------------------------ prefs
 
 type Mode = "strip" | "tablet";
+type PadTool = InkTool | "eraser";
+interface InkStyle {
+  color: string;
+  width: number;
+}
 interface Prefs {
   mode: Mode;
   /** CSS px per page unit; null = default for this screen. */
   zoom: number | null;
+  tool: PadTool;
+  style: Record<InkTool, InkStyle>;
+  /** Custom colour per tool (the palette's fifth swatch), if one was picked. */
+  custom: Record<InkTool, string | null>;
+  /** Blank pad: no ink on the phone. */
+  blank: boolean;
+  /** Collapse the toolbar when the pen touches down. */
+  autoHide: boolean;
 }
 
 const PREFS_KEY = "note-taker.pad.prefs";
-const RECTS_KEY = "note-taker.pad.strip"; // { [pageId]: { x, y } }
-const SHIFT_MS = 120;
 
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -349,7 +344,203 @@ function saveJson(key: string, v: unknown): void {
   }
 }
 
-const prefs: Prefs = loadJson<Prefs>(PREFS_KEY, { mode: "strip", zoom: null });
+const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+const INK_TOOLS: readonly InkTool[] = ["pen", "highlighter"];
+
+/** Stored prefs, with anything missing or malformed replaced by defaults. */
+function loadPrefs(): Prefs {
+  const raw = loadJson<Record<string, any>>(PREFS_KEY, {});
+  const style = {} as Record<InkTool, InkStyle>;
+  const custom = {} as Record<InkTool, string | null>;
+  for (const t of INK_TOOLS) {
+    const p = TOOL_PRESETS[t];
+    const v = raw.style?.[t];
+    const w = v?.width;
+    style[t] = {
+      color: isHex(v?.color) ? v.color : p.colors[0]!,
+      width: typeof w === "number" && w > 0 && w <= 500 ? w : p.widths[1]!,
+    };
+    custom[t] = isHex(raw.custom?.[t]) ? raw.custom[t] : null;
+  }
+  const zoom = raw.zoom;
+  return {
+    mode: raw.mode === "tablet" ? "tablet" : "strip",
+    zoom: typeof zoom === "number" && Number.isFinite(zoom) ? zoom : null,
+    tool: raw.tool === "highlighter" || raw.tool === "eraser" ? raw.tool : "pen",
+    style,
+    custom,
+    blank: raw.blank === true,
+    autoHide: raw.autoHide !== false,
+  };
+}
+
+const prefs: Prefs = loadPrefs();
+const savePrefs = () => saveJson(PREFS_KEY, prefs);
+
+// ------------------------------------------------------------------ toolbar
+
+let tool: PadTool = "pen";
+/** The ink tool the palette edits and the eraser returns to. */
+let inkTool: InkTool = "pen";
+const TOOL_ICON: Record<PadTool, string> = { pen: "✎", highlighter: "🖍", eraser: "⌫" };
+const ERASER_COLOR = "#d2413a";
+
+function setTool(t: PadTool) {
+  tool = t;
+  if (t !== "eraser") inkTool = t;
+  prefs.tool = t;
+  savePrefs();
+  for (const k of ["pen", "highlighter", "eraser"] as const) {
+    $(`#tool-${k}`).setAttribute("aria-pressed", String(k === t));
+  }
+  renderStyle();
+}
+
+/** Tapping the active pen / highlighter again opens its palette. */
+function tapTool(t: PadTool) {
+  if (t === "eraser") return setTool(tool === "eraser" ? inkTool : "eraser");
+  if (t === tool) return togglePalette();
+  setTool(t);
+  if (!palette.hidden) renderPalette();
+}
+$("#tool-pen").addEventListener("click", () => tapTool("pen"));
+$("#tool-highlighter").addEventListener("click", () => tapTool("highlighter"));
+$("#tool-eraser").addEventListener("click", () => tapTool("eraser"));
+
+const style = (): InkStyle => prefs.style[inkTool];
+
+// ---- palette: four colours + custom, three widths
+
+const palette = $("#palette");
+$("#style").addEventListener("click", () => {
+  if (tool === "eraser") setTool(inkTool);
+  togglePalette();
+});
+
+function togglePalette(open = palette.hidden): void {
+  palette.hidden = !open;
+  if (open) renderPalette();
+}
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...kids: Node[]) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = String(v);
+    else if (k === "style") e.setAttribute("style", String(v));
+    else (e as any)[k] = v;
+  }
+  e.append(...kids);
+  return e;
+}
+
+function renderPalette(): void {
+  const t = inkTool;
+  const cur = style();
+  const presets = TOOL_PRESETS[t];
+  const pick = (patch: Partial<InkStyle>) => {
+    prefs.style[t] = { ...prefs.style[t], ...patch };
+    savePrefs();
+    renderStyle();
+    renderPalette();
+  };
+
+  const colors = presets.colors.map((c) => {
+    const b = el("button", { type: "button", title: c }, el("span", { class: "swatch", style: `color:${c}` }));
+    b.setAttribute("aria-pressed", String(c.toLowerCase() === cur.color.toLowerCase()));
+    b.addEventListener("click", () => pick({ color: c }));
+    return b;
+  });
+  const customColor = prefs.custom[t];
+  const isCustom = !presets.colors.some((c) => c.toLowerCase() === cur.color.toLowerCase());
+  const input = el("input", { type: "color", value: customColor ?? cur.color });
+  input.addEventListener("input", () => {
+    prefs.custom[t] = input.value;
+    pick({ color: input.value });
+  });
+  const custom = el(
+    "label",
+    { class: `custom${customColor ? " set" : ""}`, title: "Custom colour" },
+    el("span", { class: "swatch", style: customColor ? `color:${customColor}` : "" }),
+    input,
+  );
+  custom.setAttribute("aria-pressed", String(isCustom));
+  // Tapping the custom swatch when a custom colour exists selects it; the picker still opens.
+  custom.addEventListener("click", () => {
+    if (customColor && !isCustom) pick({ color: customColor });
+  });
+  $("#pal-colors").replaceChildren(...colors, custom);
+
+  const dots = [8, 13, 20];
+  $("#pal-widths").replaceChildren(
+    ...presets.widths.map((w, i) => {
+      const b = el(
+        "button",
+        { type: "button", title: `Width ${w / 10} mm` },
+        el("span", { class: "dot-w", style: `width:${dots[i]}px;height:${dots[i]}px` }),
+      );
+      b.setAttribute("aria-pressed", String(w === cur.width));
+      b.addEventListener("click", () => pick({ width: w }));
+      return b;
+    }),
+  );
+  $<HTMLInputElement>("#autohide").checked = prefs.autoHide;
+}
+
+$<HTMLInputElement>("#autohide").addEventListener("change", (e) => {
+  prefs.autoHide = (e.target as HTMLInputElement).checked;
+  savePrefs();
+});
+
+function renderStyle(): void {
+  const color = tool === "eraser" ? ERASER_COLOR : style().color;
+  for (const sel of ["#style .swatch", "#tb-handle .swatch"]) $(sel).style.color = color;
+  $("#tb-handle-tool").textContent = TOOL_ICON[tool];
+}
+
+// ---- auto-hide: the toolbar collapses to a small handle while writing
+
+const toolbar = $("#toolbar");
+const tbHandle = $<HTMLButtonElement>("#tb-handle");
+
+function setCollapsed(collapsed: boolean): void {
+  toolbar.classList.toggle("collapsed", collapsed);
+  tbHandle.hidden = !collapsed;
+  if (collapsed) togglePalette(false);
+}
+const collapsed = () => toolbar.classList.contains("collapsed");
+tbHandle.addEventListener("click", () => setCollapsed(false));
+$("#tb-hide").addEventListener("click", () => setCollapsed(true));
+
+/** Pen touched the page: get the UI out of the way. */
+function penStarted(): void {
+  togglePalette(false);
+  if (prefs.autoHide) setCollapsed(true);
+}
+
+// ---- blank pad
+
+function setBlank(blank: boolean): void {
+  prefs.blank = blank;
+  savePrefs();
+  pad.setBlank(blank);
+  $("#blank").setAttribute("aria-pressed", String(blank));
+}
+$("#blank").addEventListener("click", () => setBlank(!prefs.blank));
+
+function undo() {
+  if (!active && !erasing) conn.send({ type: "undo" });
+}
+function redo() {
+  if (!active && !erasing) conn.send({ type: "redo" });
+}
+$("#undo").addEventListener("click", undo);
+$("#redo").addEventListener("click", redo);
+
+// ------------------------------------------------------------------ zoom strip
+
+const RECTS_KEY = "note-taker.pad.strip"; // { [pageId]: { x, y } }
+const SHIFT_MS = 120;
+
 const savedRects = loadJson<Record<string, { x: number; y: number }>>(RECTS_KEY, {});
 let strip: Strip | null = null;
 
@@ -488,7 +679,8 @@ function armAdvance(x: number): void {
 
 function setMode(mode: Mode): void {
   prefs.mode = mode;
-  saveJson(PREFS_KEY, prefs);
+  savePrefs();
+  if (immersive()) lockOrientation();
   clearAdvance();
   showStrip(false);
   sendViewport();
@@ -520,7 +712,12 @@ interface ActiveStroke {
   id: string;
   pointerId: number;
   pageId: string;
+  tool: InkTool;
   t0: number;
+  /** `timeStamp` of the newest sample (latency stamps). */
+  lastTs: number;
+  /** Pen event → local ink drawn, ms, last frame (sent for the viewer's HUD). */
+  lat: number | null;
   pts: number[];
   tail: number[];
   /** Points already sent on connection `sentGen`. */
@@ -540,6 +737,7 @@ const r3 = (v: number) => Math.round(v * 1000) / 1000;
 const pressureOf = (e: PointerEvent) => (e.pointerType === "mouse" ? 0.25 : e.pressure);
 
 function sample(e: PointerEvent, into: number[], t0: number): void {
+  if (active && into === active.pts) active.lastTs = e.timeStamp;
   const [x, y] = pad.toPage(e.clientX, e.clientY);
   const p = r3(pressureOf(e));
   const n = into.length;
@@ -567,6 +765,7 @@ canvas.addEventListener("pointerdown", (e) => {
   clearAdvance();
   strip?.penDown();
   settle();
+  penStarted();
   const [x, y] = pad.toPage(e.clientX, e.clientY);
   if (tool === "eraser") {
     capture(e);
@@ -575,17 +774,22 @@ canvas.addEventListener("pointerdown", (e) => {
   }
   if (!pad.inPage(x, y)) return;
   capture(e);
+  hover(null);
+  const st = style();
   active = {
     id: uid(),
     pointerId: e.pointerId,
     pageId: pad.page.id,
+    tool: inkTool,
     t0: e.timeStamp,
+    lastTs: e.timeStamp,
+    lat: null,
     pts: [],
     tail: [],
     sent: 0,
     sentGen: -1,
-    color: DEFAULT_PEN_COLOR,
-    width: DEFAULT_PEN_WIDTH,
+    color: st.color,
+    width: st.width,
   };
   sample(e, active.pts, active.t0);
   flush(); // begin goes out right away so the PC can start drawing
@@ -620,7 +824,7 @@ function finish(): void {
   const stroke: StrokeData = {
     id: s.id,
     pageId: s.pageId,
-    tool: "pen",
+    tool: s.tool,
     color: s.color,
     width: s.width,
     pts: s.pts,
@@ -642,7 +846,7 @@ function flush(s: ActiveStroke | null = active): void {
   if (!s || conn.status !== "open") return;
   if (s.sentGen !== generation) {
     // New connection since the stroke began: start it over there.
-    const ok = conn.send({ type: "stroke.begin", id: s.id, pageId: s.pageId, tool: "pen", color: s.color, width: s.width });
+    const ok = conn.send({ type: "stroke.begin", id: s.id, pageId: s.pageId, tool: s.tool, color: s.color, width: s.width });
     if (!ok) return;
     s.sentGen = generation;
     s.sent = 0;
@@ -650,7 +854,14 @@ function flush(s: ActiveStroke | null = active): void {
   const total = s.pts.length / POINT_STRIDE;
   while (s.sent < total) {
     const end = Math.min(total, s.sent + LIMITS.pointsPerMessage);
-    if (!conn.send({ type: "stroke.points", id: s.id, pts: s.pts.slice(s.sent * POINT_STRIDE, end * POINT_STRIDE) })) return;
+    const msg: StrokePointsMsg = { type: "stroke.points", id: s.id, pts: s.pts.slice(s.sent * POINT_STRIDE, end * POINT_STRIDE) };
+    if (end === total) {
+      // Latency stamps ride on the batch holding the newest sample.
+      const at = conn.serverTime(s.lastTs);
+      if (at !== null) msg.at = Math.round(at * 10) / 10;
+      if (s.lat !== null) msg.lat = Math.round(s.lat * 10) / 10;
+    }
+    if (!conn.send(msg)) return;
     s.sent = end;
   }
 }
@@ -662,6 +873,7 @@ function scheduleFrame(): void {
     if (active) {
       flush();
       pad.drawLive(active);
+      active.lat = performance.now() - active.lastTs;
     } else if (erasing) {
       flushErase();
       pad.drawEraser({ x: erasing.x, y: erasing.y, r: eraserRadius() });
@@ -763,19 +975,33 @@ const gestures = new Gestures(
       publishViewport();
     },
     end: () => {
-      saveJson(PREFS_KEY, prefs);
+      savePrefs();
       settle(); // sharp render now
     },
   },
   penNear,
 );
 
+/** A finger that landed on the top edge while the toolbar is hidden: swipe down (or tap) shows it. */
+const EDGE_PX = 28;
+let edge: { pointerId: number; y0: number } | null = null;
+
 // Capture phase: see every pen event (incl. hover) before anything else.
 canvas.addEventListener(
   "pointermove",
   (e) => {
     if (e.pointerType === "pen") lastPenAt = performance.now();
-    else if (e.pointerType === "touch") gestures.move(e);
+    if (draws(e)) trackHover(e);
+    else if (e.pointerType === "touch") {
+      if (edge?.pointerId === e.pointerId) {
+        if (e.clientY - edge.y0 > 24) {
+          edge = null;
+          setCollapsed(false);
+        }
+        return;
+      }
+      gestures.move(e);
+    }
   },
   true,
 );
@@ -784,10 +1010,68 @@ canvas.addEventListener("pointerdown", (e) => {
     lastPenAt = performance.now();
     gestures.cancel();
   }
-  if (e.pointerType === "touch") gestures.down(e);
+  if (e.pointerType !== "touch") return;
+  if (collapsed() && !edge && e.clientY < EDGE_PX && !penNear()) {
+    edge = { pointerId: e.pointerId, y0: e.clientY };
+    return;
+  }
+  gestures.down(e);
 });
-canvas.addEventListener("pointerup", (e) => e.pointerType === "touch" && gestures.up(e));
-canvas.addEventListener("pointercancel", (e) => e.pointerType === "touch" && gestures.up(e, true));
+canvas.addEventListener("pointerup", (e) => {
+  if (e.pointerType !== "touch") return;
+  if (edge?.pointerId === e.pointerId) {
+    edge = null;
+    if (!penNear()) setCollapsed(false);
+    return;
+  }
+  gestures.up(e);
+});
+canvas.addEventListener("pointercancel", (e) => {
+  if (e.pointerType !== "touch") return;
+  if (edge?.pointerId === e.pointerId) edge = null;
+  else gestures.up(e, true);
+});
+
+// ------------------------------------------------------------------ hover → PC cursor
+
+/** Pending hover update (undefined = nothing to send); sent at most once per frame. */
+let hoverNext: HoverPoint | null | undefined;
+let hoverSent: HoverPoint | null = null;
+let hoverFrame = 0;
+
+function hover(at: HoverPoint | null): void {
+  if (at === null && hoverSent === null && hoverNext === undefined) return;
+  hoverNext = at;
+  if (hoverFrame) return;
+  hoverFrame = requestAnimationFrame(() => {
+    hoverFrame = 0;
+    const next = hoverNext;
+    hoverNext = undefined;
+    if (next === undefined || (next === null && hoverSent === null)) return;
+    if (conn.send({ type: "hover", at: next })) hoverSent = next;
+  });
+}
+
+/** Pen moving above the screen (or erasing): show it on the PC. Ink strokes show themselves. */
+function trackHover(e: PointerEvent): void {
+  if (!pad.page || active) return;
+  const erasingNow = erasing?.pointerId === e.pointerId;
+  if (e.buttons !== 0 && !erasingNow) return;
+  const [x, y] = pad.toPage(e.clientX, e.clientY);
+  hover({
+    pageId: pad.page.id,
+    x: Math.round(x * 10) / 10,
+    y: Math.round(y * 10) / 10,
+    tool,
+    color: tool === "eraser" ? ERASER_COLOR : style().color,
+    ...(tool === "eraser" ? {} : { width: style().width }),
+  });
+}
+for (const type of ["pointerleave", "pointerout"] as const) {
+  canvas.addEventListener(type, (e) => {
+    if (draws(e) && !active && !erasing) hover(null);
+  });
+}
 
 // ------------------------------------------------------------------ screen
 
@@ -801,26 +1085,63 @@ window.addEventListener("resize", () => {
 });
 pad.resize();
 
-// Strip mode wants landscape (long lines); the whole page is bigger in portrait.
-$("#fullscreen").addEventListener("click", async () => {
+/** Launched from the home screen (PWA, `display: fullscreen`) — already immersive. */
+const installed = () =>
+  matchMedia("(display-mode: fullscreen)").matches || matchMedia("(display-mode: standalone)").matches;
+const immersive = () => Boolean(document.fullscreenElement) || installed();
+
+type LockableOrientation = ScreenOrientation & { lock?: (o: string) => Promise<void>; unlock?: () => void };
+
+/** Strip mode wants landscape (long lines); the whole page is bigger in portrait, so rotate freely. */
+function lockOrientation(): void {
+  const o = screen.orientation as LockableOrientation;
   try {
-    await document.documentElement.requestFullscreen({ navigationUI: "hide" });
-    const o = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
-    if (prefs.mode === "strip") await o.lock?.("landscape");
+    if (prefs.mode === "strip") o.lock?.("landscape").catch(() => {});
+    else o.unlock?.();
   } catch {
-    // not supported / denied — harmless
+    // not supported — harmless
   }
-});
-document.addEventListener("fullscreenchange", () => {
-  $("#fullscreen").hidden = Boolean(document.fullscreenElement);
-});
+}
+
+async function enterFullscreen(): Promise<void> {
+  try {
+    if (!immersive()) await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+  } catch {
+    // denied / not supported — keep going
+  }
+  if (immersive()) lockOrientation();
+}
+
+$("#fullscreen").addEventListener("click", () => void enterFullscreen());
+const renderFullscreen = () => ($("#fullscreen").hidden = immersive());
+document.addEventListener("fullscreenchange", renderFullscreen);
+renderFullscreen();
+
+// The first tap with the pen or a finger goes fullscreen (needs a user gesture). Done on
+// pointer-up, so the resize never lands in the middle of a stroke. Only once per load:
+// leaving fullscreen on purpose sticks (the button brings it back).
+let autoFullscreen = true;
+window.addEventListener(
+  "pointerup",
+  (e) => {
+    if (!autoFullscreen || (e.pointerType !== "pen" && e.pointerType !== "touch")) return;
+    autoFullscreen = false;
+    void enterFullscreen();
+  },
+  true,
+);
 
 // Keep the screen awake while the pad is open (secure contexts only: localhost over USB qualifies).
 let wakeLock: WakeLockSentinel | null = null;
 async function keepAwake() {
   try {
     if ("wakeLock" in navigator && document.visibilityState === "visible") {
-      wakeLock = await navigator.wakeLock.request("screen");
+      const lock = await navigator.wakeLock.request("screen");
+      wakeLock = lock;
+      // Released by the system (tab hidden, battery saver): ask again when possible.
+      lock.addEventListener("release", () => {
+        if (wakeLock === lock) wakeLock = null;
+      });
     }
   } catch {
     wakeLock = null;
@@ -832,7 +1153,9 @@ document.addEventListener("visibilitychange", () => {
 });
 void keepAwake();
 
-setTool("pen");
-setMode(prefs.mode === "tablet" ? "tablet" : "strip");
+inkTool = prefs.tool === "highlighter" ? "highlighter" : "pen";
+setTool(prefs.tool);
+setMode(prefs.mode);
+setBlank(prefs.blank);
 renderHistory();
 if (!pad.desynchronized) console.warn("[pad] desynchronized canvas not available — ink latency will be higher");

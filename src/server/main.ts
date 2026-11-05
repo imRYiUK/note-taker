@@ -1,18 +1,22 @@
 import { mkdirSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { X509Certificate } from "node:crypto";
 import { join } from "node:path";
 import padPage from "../pad/index.html";
 import viewerPage from "../viewer/index.html";
 import probePage from "../probe/index.html";
 import { WS_PATH } from "../shared/protocol.ts";
 import { DEFAULT_INK, type InkSettings } from "../shared/ink.ts";
-import { loadConfig, saveInkSettings, dataDir as defaultDataDir } from "./config.ts";
+import { loadConfig, loadTls, saveInkSettings, dataDir as defaultDataDir } from "./config.ts";
 import { AdbWatcher } from "./adb.ts";
 import { Hub, type WsData } from "./hub.ts";
 import { Library } from "./notebook.ts";
-import { pageSvg } from "./export.ts";
+import { attachment, exportFileName, notebookPdf, pageSvg, type PdfSource } from "./export.ts";
+import { iconPng } from "./icon.ts";
 import { Store } from "./store.ts";
-import { authorize, isLoopback, padUrls } from "./net.ts";
+import { authorize, isLoopback, lanAddresses, padUrls, type LanAddress } from "./net.ts";
+import { qrTerminal } from "../shared/qr.ts";
+import { pageSuffix } from "../shared/filename.ts";
 
 export const VERSION = "0.0.1";
 const MAX_PROBE_BYTES = 1 << 20;
@@ -27,6 +31,15 @@ export interface ServerOptions {
   helloTimeoutMs?: number;
   ink?: InkSettings;
   onInkChange?: (ink: InkSettings) => void;
+  /**
+   * HTTPS for Wi-Fi pads (a mkcert certificate trusted by the phone): served on
+   * `tls.port` next to plain HTTP, and LAN pairing links use it.
+   */
+  tls?: { cert: string; key: string; port: number };
+  /** How often to look for LAN address changes, ms (0 = never; default 5000). */
+  lanWatchMs?: number;
+  /** LAN addresses to advertise (tests); default: detected. */
+  lan?: () => LanAddress[];
 }
 
 export function startServer(opts: ServerOptions) {
@@ -44,11 +57,15 @@ export function startServer(opts: ServerOptions) {
   // Filled in once the server is listening (port may be 0 → random).
   let hub!: Hub;
   const adb = opts.adb === false ? null : new AdbWatcher(() => port, () => hub?.broadcastDevices(), log);
-  const lanHosts = () => (hostname === "127.0.0.1" ? [] : undefined);
+  const lanHosts = () => (hostname === "127.0.0.1" ? [] : (opts.lan ?? lanAddresses)());
+  let lan = lanHosts();
+  const cert = opts.tls ? new X509Certificate(opts.tls.cert) : null;
+  let httpsPort: number | undefined;
+  const currentPadUrls = () => padUrls(port, opts.token, lan, { httpsPort, cert });
 
   hub = new Hub({
     token: opts.token,
-    padUrls: () => padUrls(port, opts.token, lanHosts()),
+    padUrls: currentPadUrls,
     usbUrl: (page) => `http://localhost:${port}/${page}`,
     adb,
     log,
@@ -60,15 +77,44 @@ export function startServer(opts: ServerOptions) {
 
   const json = (body: unknown, status = 200) => Response.json(body, { status });
 
-  const server = Bun.serve({
-    port,
+  function exportResponse(file: string, q: URLSearchParams): Response {
+    const m = /^(.+)\.(svg|pdf)$/.exec(file);
+    if (!m) return json({ error: "unknown format" }, 404);
+    const [, id, ext] = m as unknown as [string, string, "svg" | "pdf"];
+    const page = store.page(id);
+    const nb = store.notebook(page ? page.notebookId : id);
+    if (!nb || (ext === "svg" && !page)) return json({ error: "no such page or notebook" }, 404);
+    const headers: Record<string, string> = { "cache-control": "no-cache" };
+    const pages = page ? [page] : store.pages(nb.id);
+    const suffix = page ? pageSuffix(store.pageIndex(page.id), nb.pages) : "";
+    if (q.has("download")) headers["content-disposition"] = attachment(exportFileName(nb.title, ext, suffix));
+
+    if (ext === "svg") {
+      const svg = pageSvg(page!, nb.template, library.pageStrokes(page!.id), hub.ink, { thumb: q.has("thumb") });
+      return new Response(svg, { headers: { ...headers, "content-type": "image/svg+xml; charset=utf-8" } });
+    }
+    const sources: PdfSource[] = pages.map((p) => ({ page: p, template: nb.template, strokes: library.pageStrokes(p.id) }));
+    const pdf = notebookPdf(sources, hub.ink, { title: nb.title + suffix, split: q.get("split") === "1" });
+    return new Response(pdf, { headers: { ...headers, "content-type": "application/pdf" } });
+  }
+
+  const listen = (listenPort: number, tls?: { cert: string; key: string }) => Bun.serve({
+    port: listenPort,
     hostname,
+    tls,
     development: process.env.NOTE_TAKER_DEV ? { hmr: true, console: true } : false,
     routes: {
       "/": Response.redirect("/viewer", 302),
       "/pad": padPage,
       "/viewer": viewerPage,
       "/probe": probePage,
+
+      // PWA icons (the manifest is bundled with /pad; its icon URLs point here).
+      "/icons/:name": (req) => {
+        const png = iconPng(req.params.name);
+        if (!png) return new Response("not found", { status: 404 });
+        return new Response(png, { headers: { "content-type": "image/png", "cache-control": "max-age=86400" } });
+      },
 
       "/api/health": () => json({ ok: true, name: "note-taker", version: VERSION }),
 
@@ -107,22 +153,15 @@ export function startServer(opts: ServerOptions) {
         },
       },
 
-      // A page as SVG (`?thumb=1`: coarser, for the viewer's thumbnails).
+      // Export: `<pageId>.svg` (`?thumb=1`: coarser, for the viewer's thumbnails),
+      // `<pageId>.pdf`, `<notebookId>.pdf` (`?split=1`: endless pages cut into A4).
+      // `?download=1` adds a file name (the notebook title).
       "/api/export/:file": (req, srv) => {
         const url = new URL(req.url);
         if (!authorize(isLoopback(srv.requestIP(req)?.address), url.searchParams.get("token"), opts.token)) {
           return json({ error: "bad token" }, 401);
         }
-        const m = /^(.+)\.svg$/.exec(req.params.file);
-        const page = m ? store.page(m[1]!) : null;
-        if (!page) return json({ error: "no such page" }, 404);
-        const nb = store.notebook(page.notebookId)!;
-        const svg = pageSvg(page, nb.template, library.pageStrokes(page.id), hub.ink, {
-          thumb: url.searchParams.has("thumb"),
-        });
-        return new Response(svg, {
-          headers: { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "no-cache" },
-        });
+        return exportResponse(req.params.file, url.searchParams);
       },
 
       [WS_PATH]: (req, srv) => {
@@ -152,19 +191,37 @@ export function startServer(opts: ServerOptions) {
     },
   });
 
+  const server = listen(port);
   port = server.port ?? port;
+  const secureServer = opts.tls ? listen(opts.tls.port, { cert: opts.tls.cert, key: opts.tls.key }) : null;
+  httpsPort = secureServer?.port;
   adb?.start();
+
+  // LAN detection: re-advertise pairing links when Wi-Fi comes, goes or changes address.
+  const lanWatchMs = opts.lanWatchMs ?? 5000;
+  const lanTimer = lanWatchMs > 0
+    ? setInterval(() => {
+        const next = lanHosts();
+        if (JSON.stringify(next) === JSON.stringify(lan)) return;
+        lan = next;
+        log(`LAN addresses: ${next.map((a) => `${a.address} (${a.iface})`).join(", ") || "none"}`);
+        hub.broadcastPairing();
+      }, lanWatchMs)
+    : null;
 
   return {
     server,
     hub,
     port,
     url: `http://localhost:${port}`,
-    padUrls: () => padUrls(port, opts.token, lanHosts()),
+    httpsPort,
+    padUrls: currentPadUrls,
     async stop() {
+      if (lanTimer) clearInterval(lanTimer);
       adb?.stop();
       hub.dispose();
       await server.stop(true);
+      await secureServer?.stop(true);
       store.close();
     },
   };
@@ -177,10 +234,12 @@ if (import.meta.main) {
   if (args.has("--help") || args.has("-h")) {
     console.log(`note-taker server ${VERSION}
 
-Usage: bun src/server/main.ts [--usb-only] [--no-adb]
+Usage: bun src/server/main.ts [--usb-only] [--no-adb] [--no-https] [--qr]
 
   --usb-only   listen on 127.0.0.1 only (phone must use USB / adb reverse)
   --no-adb     don't manage adb reverse automatically
+  --no-https   ignore the mkcert certificate in <config>/tls/ (cert.pem, key.pem)
+  --qr         print the Wi-Fi pairing QR code in the terminal
 
 Env: NOTE_TAKER_PORT, NOTE_TAKER_CONFIG_DIR, NOTE_TAKER_DATA_DIR, NOTE_TAKER_DEV=1`);
     process.exit(0);
@@ -195,6 +254,8 @@ Env: NOTE_TAKER_PORT, NOTE_TAKER_CONFIG_DIR, NOTE_TAKER_DATA_DIR, NOTE_TAKER_DEV
       saveInkSettings(ink).catch((e) => console.error(`[note-taker] could not save settings: ${(e as Error).message}`));
     }, 500);
   };
+  const usbOnly = args.has("--usb-only");
+  const tls = usbOnly || args.has("--no-https") ? null : await loadTls();
   let app: ReturnType<typeof startServer>;
   try {
     app = startServer({
@@ -204,6 +265,7 @@ Env: NOTE_TAKER_PORT, NOTE_TAKER_CONFIG_DIR, NOTE_TAKER_DATA_DIR, NOTE_TAKER_DEV
       adb: !args.has("--no-adb"),
       ink: cfg.ink,
       onInkChange: persistInk,
+      tls: tls ? { ...tls, port: cfg.port + 1 } : undefined,
     });
   } catch (e) {
     console.error(`[note-taker] could not start (port ${cfg.port}): ${(e as Error).message}`);
@@ -214,8 +276,9 @@ Env: NOTE_TAKER_PORT, NOTE_TAKER_CONFIG_DIR, NOTE_TAKER_DATA_DIR, NOTE_TAKER_DEV
   console.log(`[note-taker] ${VERSION} listening on :${app.port}
   viewer     ${app.url}/viewer
   pad (USB)  ${urls.usb}
-${urls.lan.map((u) => `  pad (LAN)  ${u}`).join("\n")}
+${urls.lan.map((l) => `  pad (LAN)  ${l.url}  [${l.iface}]${l.warning ? `  ⚠ ${l.warning}` : ""}`).join("\n")}
   probe      ${app.url}/probe`);
+  if (args.has("--qr") && urls.lan[0]) console.log(`\n${qrTerminal(urls.lan[0].url)}\n  scan with the phone (${urls.lan[0].iface})`);
 
   const shutdown = async () => {
     await app.stop();
