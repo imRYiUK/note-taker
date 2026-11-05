@@ -1,11 +1,11 @@
 // Wire protocol shared by server, pad (phone) and viewer (PC).
 // JSON over WebSocket. See PLAN.md §4. M0: handshake, liveness, device
 // management. M1: live strokes, page snapshot, ink settings. M2: stroke acks
-// (pad outbox), erase, undo/redo.
+// (pad outbox), erase, undo/redo. M3: viewport (zoom-strip position).
 
-import { POINT_STRIDE, parseInkPatch, type InkSettings } from "./ink.ts";
+import { POINT_STRIDE, parseInkPatch, type InkSettings, type Rect } from "./ink.ts";
 
-export const PROTOCOL_VERSION = 3; // 2: M1 strokes, snapshot, settings · 3: M2 acks, erase, undo
+export const PROTOCOL_VERSION = 4; // 2: M1 strokes, snapshot, settings · 3: M2 acks, erase, undo · 4: M3 viewport
 export const DEFAULT_PORT = 7777;
 export const WS_PATH = "/ws";
 
@@ -62,6 +62,15 @@ export const LIMITS = {
   idsPerMessage: 5000,
 } as const;
 
+/**
+ * The part of the page the pad shows (zoom-strip rect, page units), or null in
+ * tablet mode (whole page). The viewer draws it and can drag it.
+ */
+export interface Viewport {
+  pageId: string;
+  rect: Rect | null;
+}
+
 /** Whether undo / redo would do anything right now. */
 export interface HistoryState {
   canUndo: boolean;
@@ -90,7 +99,8 @@ export type ClientMsg =
   | { type: "redo" }
   /** Erase every stroke on the page (one undo step). */
   | { type: "page.clear"; pageId: string }
-  | { type: "settings.set"; ink: Partial<InkSettings> };
+  | { type: "settings.set"; ink: Partial<InkSettings> }
+  | ({ type: "viewport" } & Viewport);
 
 // ---------------------------------------------------------------- server → client
 
@@ -103,7 +113,9 @@ export type ServerMsg =
   /** A capability report posted by /probe (sent to viewers). */
   | { type: "probe.report"; file: string; report: unknown }
   /** Full state of the active page; sent after welcome and whenever it is replaced. */
-  | { type: "snapshot"; page: PageInfo; strokes: StrokeData[] }
+  | { type: "snapshot"; page: PageInfo; strokes: StrokeData[]; viewport: Viewport | null }
+  /** The strip moved (sent to everyone except the client that moved it). */
+  | ({ type: "viewport" } & Viewport)
   /** Live stroke traffic from a pad, forwarded to viewers. */
   | StrokeBeginMsg
   | StrokePointsMsg
@@ -150,6 +162,17 @@ const isColor = (v: unknown): v is string => typeof v === "string" && /^#[0-9a-f
 
 function isIdArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.length <= LIMITS.idsPerMessage && v.every(isId);
+}
+
+const MAX_COORD = 1e6;
+
+function isRect(v: unknown): v is Rect {
+  if (!isObj(v)) return false;
+  const { x, y, w, h } = v;
+  return (
+    isNum(x) && isNum(y) && isNum(w) && isNum(h) &&
+    Math.abs(x) <= MAX_COORD && Math.abs(y) <= MAX_COORD && w > 0 && h > 0 && w <= MAX_COORD && h <= MAX_COORD
+  );
 }
 
 function isPointArray(v: unknown): v is number[] {
@@ -216,6 +239,11 @@ export function parseClientMsg(raw: string | Buffer): ClientMsg | null {
     case "settings.set": {
       const ink = parseInkPatch(v.ink);
       return ink ? { type: "settings.set", ink } : null;
+    }
+    case "viewport": {
+      if (!isId(v.pageId) || !(v.rect === null || isRect(v.rect))) return null;
+      const r = v.rect as Rect | null;
+      return { type: "viewport", pageId: v.pageId, rect: r && { x: r.x, y: r.y, w: r.w, h: r.h } };
     }
     default:
       return null;

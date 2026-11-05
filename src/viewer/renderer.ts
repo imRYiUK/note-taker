@@ -15,6 +15,7 @@ import {
   type Rect,
 } from "../shared/ink.ts";
 import type { PageInfo, StrokeBeginMsg, StrokeData } from "../shared/protocol.ts";
+import { drawRuling } from "../shared/templates.ts";
 
 export type FitMode = "width" | "page";
 
@@ -51,6 +52,8 @@ export class PageView {
 
   /** Raw max pressure of recently committed strokes, newest last. */
   readonly recentPressure: number[] = [];
+  /** Called after the page is laid out again (scale changed). */
+  onLayout: (() => void) | null = null;
 
   constructor(private readonly stage: HTMLElement) {
     this.wrap = document.createElement("div");
@@ -116,6 +119,24 @@ export class PageView {
 
   get strokeCount(): number {
     return this.strokes.size;
+  }
+
+  /** CSS px per page unit. */
+  get pxPerUnit(): number {
+    return this.scale;
+  }
+
+  /** Scroll (vertically) so that a page-unit rect is comfortably in view. */
+  reveal(r: { y: number; h: number }): void {
+    if (!this.follow) return;
+    const top = this.wrap.offsetTop + r.y * this.scale;
+    const bottom = top + r.h * this.scale;
+    const view = this.stage.scrollTop;
+    const h = this.stage.clientHeight;
+    const margin = Math.min(h * 0.12, Math.max(0, (h - (bottom - top)) / 2));
+    if (top < view + margin || bottom > view + h - margin) {
+      this.stage.scrollTo({ top: (top + bottom) / 2 - h / 2, behavior: "smooth" });
+    }
   }
 
   // ------------------------------------------------------------ live strokes
@@ -207,6 +228,7 @@ export class PageView {
     this.liveRect = null;
     this.redrawBase();
     this.scheduleLive();
+    this.onLayout?.();
   }
 
   private redrawBase(): void {
@@ -215,6 +237,9 @@ export class PageView {
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = PAPER;
     c.fillRect(0, 0, this.base.width, this.base.height);
+    const k = this.scale * this.dpr;
+    c.setTransform(k, 0, 0, k, 0, 0);
+    drawRuling(c, this.page, k);
     for (const s of this.strokes.values()) this.paintStroke(s);
   }
 

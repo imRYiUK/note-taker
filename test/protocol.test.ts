@@ -48,6 +48,21 @@ describe("parseClientMsg", () => {
     expect(parseClientMsg(j({ type: "redo" }))).toEqual({ type: "redo" });
   });
 
+  test("viewport", () => {
+    const rect = { x: -10, y: 20.5, w: 515, h: 240 };
+    expect(parseClientMsg(j({ type: "viewport", pageId: "p", rect, extra: 1 }))).toEqual({ type: "viewport", pageId: "p", rect });
+    expect(parseClientMsg(j({ type: "viewport", pageId: "p", rect: { ...rect, junk: true } }))).toEqual({
+      type: "viewport",
+      pageId: "p",
+      rect,
+    });
+    expect(parseClientMsg(j({ type: "viewport", pageId: "p", rect: null }))).toEqual({ type: "viewport", pageId: "p", rect: null });
+    expect(parseClientMsg(j({ type: "viewport", pageId: "p" }))).toBeNull();
+    expect(parseClientMsg(j({ type: "viewport", pageId: "p", rect: { ...rect, w: 0 } }))).toBeNull();
+    expect(parseClientMsg(j({ type: "viewport", pageId: "p", rect: { ...rect, x: "1" } }))).toBeNull();
+    expect(parseClientMsg(j({ type: "viewport", pageId: "p", rect: { ...rect, h: 1e9 } }))).toBeNull();
+  });
+
   test("accepts Buffer input", () => {
     expect(parseClientMsg(Buffer.from(j({ type: "ping", t: 0 })))).toEqual({ type: "ping", t: 0 });
   });

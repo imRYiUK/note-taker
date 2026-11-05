@@ -1,16 +1,23 @@
 // Phone client: pen input → local ink immediately → batched points to the PC.
 // Only `pen` (and `mouse`, for desktop testing) draws; `touch` never does,
-// which is the palm rejection. Fingers do multi-finger taps (undo / redo).
+// which is the palm rejection. Fingers do multi-finger taps (undo / redo) and
+// pan / pinch the zoom strip.
+//
+// Zoom strip (default mode): the screen shows a magnified window onto the page
+// that moves on by itself as you write (shared/strip.ts). Tablet mode shows the
+// whole page.
 //
 // Reliability: every finished stroke goes into an outbox (also kept in
 // localStorage) until the server acks it; after a reconnect the outbox is
 // re-sent and the server drops duplicates by stroke id.
 
 import { Connection, uid, type ConnStatus } from "../shared/connection.ts";
-import { DEFAULT_PEN_COLOR, DEFAULT_PEN_WIDTH, POINT_STRIDE } from "../shared/ink.ts";
-import { LIMITS, type HistoryState, type StrokeData } from "../shared/protocol.ts";
+import { DEFAULT_PEN_COLOR, DEFAULT_PEN_WIDTH, POINT_STRIDE, type Rect } from "../shared/ink.ts";
+import { LIMITS, type HistoryState, type PageInfo, type StrokeData, type Viewport } from "../shared/protocol.ts";
+import { Strip, ZOOM_LIMITS, lerpRect } from "../shared/strip.ts";
+import { LINED } from "../shared/templates.ts";
 import { PadCanvas } from "./canvas.ts";
-import { TapGestures } from "./gestures.ts";
+import { Gestures } from "./gestures.ts";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -145,8 +152,16 @@ const conn: Connection = new Connection("pad", {
           .map((e) => e.stroke)
           .filter((s) => s.pageId === msg.page.id && !known.has(s.id));
         pad.setPage(msg.page, [...msg.strokes.filter((s) => !hidden.has(s.id)), ...unsynced]);
+        initStrip(msg.page, msg.viewport);
         break;
       }
+      case "viewport":
+        // Moved from the PC. A null rect is another pad in tablet mode: keep ours.
+        if (msg.pageId === pad.page?.id && msg.rect) {
+          remoteMove = { x: msg.rect.x, y: msg.rect.y };
+          applyRemoteMove();
+        }
+        break;
       case "stroke.added":
         pad.addStroke(msg.stroke);
         break;
@@ -209,6 +224,193 @@ function redo() {
 $("#undo").addEventListener("click", undo);
 $("#redo").addEventListener("click", redo);
 
+// ------------------------------------------------------------------ zoom strip
+
+type Mode = "strip" | "tablet";
+interface Prefs {
+  mode: Mode;
+  /** CSS px per page unit; null = default for this screen. */
+  zoom: number | null;
+}
+
+const PREFS_KEY = "note-taker.pad.prefs";
+const RECTS_KEY = "note-taker.pad.strip"; // { [pageId]: { x, y } }
+const SHIFT_MS = 120;
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const v = JSON.parse(localStorage.getItem(key) ?? "null");
+    return v && typeof v === "object" ? { ...fallback, ...v } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function saveJson(key: string, v: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(v));
+  } catch {
+    // not remembered — fine
+  }
+}
+
+const prefs: Prefs = loadJson<Prefs>(PREFS_KEY, { mode: "strip", zoom: null });
+const savedRects = loadJson<Record<string, { x: number; y: number }>>(RECTS_KEY, {});
+let strip: Strip | null = null;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+/** Default zoom: three ruled lines fill the short side of the screen (≈ 3× real size on the S23). */
+const defaultZoom = () => Math.min(innerWidth, innerHeight) / (3 * LINED.lineHeight);
+const zoom = () => clamp(prefs.zoom ?? defaultZoom(), ...ZOOM_LIMITS);
+const stripSize = () => ({ w: innerWidth / zoom(), h: innerHeight / zoom() });
+const stripOn = (): Strip | null => (prefs.mode === "strip" ? strip : null);
+
+function initStrip(page: PageInfo, vp: Viewport | null): void {
+  strip = new Strip(page, stripSize());
+  const from = vp?.rect ?? savedRects[page.id];
+  if (from) strip.moveTo(from.x, from.y);
+  remoteMove = null;
+  showStrip(false);
+  sendViewport(); // the server may not know our size / mode yet
+}
+
+// The shift animation. Pen input always maps through the final rect: a pen-down
+// mid-animation jumps to the end first (`settle`).
+let anim: { from: Rect; to: Rect; t0: number; raf: number } | null = null;
+
+function showStrip(animate: boolean): void {
+  if (anim) cancelAnimationFrame(anim.raf);
+  anim = null;
+  const s = stripOn();
+  if (!s) return pad.setView(null);
+  const to = { ...s.rect };
+  if (!animate) return pad.setView(to);
+  const a = (anim = { from: pad.visibleRect(), to, t0: performance.now(), raf: 0 });
+  const step = (now: number) => {
+    if (anim !== a) return;
+    const t = (now - a.t0) / SHIFT_MS;
+    if (t < 1) {
+      pad.moveView(lerpRect(a.from, a.to, t));
+      a.raf = requestAnimationFrame(step);
+    } else {
+      pad.setView(a.to); // sharp final frame
+      anim = null;
+    }
+  };
+  a.raf = requestAnimationFrame(step);
+}
+
+/** Gestures move the strip many times per frame: show it at most once per frame. */
+let previewFrame = 0;
+function previewStrip(): void {
+  if (previewFrame) return;
+  previewFrame = requestAnimationFrame(() => {
+    previewFrame = 0;
+    const s = stripOn();
+    if (s) pad.moveView(s.rect);
+  });
+}
+
+function settle(): void {
+  if (previewFrame) {
+    cancelAnimationFrame(previewFrame);
+    previewFrame = 0;
+    showStrip(false);
+  }
+  if (!anim) return;
+  cancelAnimationFrame(anim.raf);
+  pad.setView(anim.to);
+  anim = null;
+}
+
+function sendViewport(): void {
+  if (!pad.page) return;
+  conn.send({ type: "viewport", pageId: pad.page.id, rect: stripOn()?.rect ?? null });
+}
+
+/** The strip moved here: remember it and tell the server (at most once per frame). */
+let vpFrame = 0;
+function publishViewport(): void {
+  if (vpFrame) return;
+  vpFrame = requestAnimationFrame(() => {
+    vpFrame = 0;
+    sendViewport();
+    rememberRect();
+  });
+}
+
+/** Keep the strip position per page, so a reload / server restart puts it back. */
+let rememberTimer: ReturnType<typeof setTimeout> | null = null;
+function rememberRect(): void {
+  if (!strip || !pad.page) return;
+  savedRects[pad.page.id] = { x: strip.rect.x, y: strip.rect.y };
+  if (rememberTimer) clearTimeout(rememberTimer);
+  rememberTimer = setTimeout(() => saveJson(RECTS_KEY, savedRects), 300);
+}
+
+/** Strip position set from the PC; applied once the pen is up (never mid-stroke). */
+let remoteMove: { x: number; y: number } | null = null;
+function applyRemoteMove(): void {
+  if (!remoteMove || !strip || active || erasing) return;
+  strip.moveTo(remoteMove.x, remoteMove.y);
+  remoteMove = null;
+  showStrip(false);
+  rememberRect();
+}
+
+/** Run a strip move from a button / timer, animated. */
+function moveStrip(fn: (s: Strip) => unknown): void {
+  const s = stripOn();
+  if (!s || active || erasing) return;
+  clearAdvance();
+  fn(s);
+  showStrip(true);
+  publishViewport();
+}
+
+let advanceTimer: ReturnType<typeof setTimeout> | null = null;
+function clearAdvance(): void {
+  if (advanceTimer) clearTimeout(advanceTimer);
+  advanceTimer = null;
+}
+
+/** Pen lifted after an ink stroke ending at page x: maybe arm the auto-advance. */
+function armAdvance(x: number): void {
+  const s = stripOn();
+  if (!s) return;
+  s.penUp(x, performance.now());
+  if (s.dueAt === null) return;
+  clearAdvance();
+  advanceTimer = setTimeout(() => {
+    advanceTimer = null;
+    if (active || erasing) return;
+    if (s === strip && s.tick(performance.now() + 1)) {
+      showStrip(true);
+      publishViewport();
+    }
+  }, s.opts.advanceDelayMs);
+}
+
+function setMode(mode: Mode): void {
+  prefs.mode = mode;
+  saveJson(PREFS_KEY, prefs);
+  clearAdvance();
+  showStrip(false);
+  sendViewport();
+  const isStrip = mode === "strip";
+  $("#mode").textContent = isStrip ? "Strip" : "Page";
+  $("#mode").title = isStrip ? "Zoom strip — tap for whole page" : "Whole page — tap for zoom strip";
+  for (const id of ["#back", "#newline", "#margin"]) $(id).hidden = !isStrip;
+}
+
+$("#mode").addEventListener("click", () => setMode(prefs.mode === "strip" ? "tablet" : "strip"));
+$("#back").addEventListener("click", () => moveStrip((s) => s.back()));
+$("#newline").addEventListener("click", () => moveStrip((s) => s.newLine()));
+// The margin handle reacts on touch-down (pen or finger): quickest way to the next line.
+$("#margin").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  moveStrip((s) => s.newLine());
+});
+
 function renderHistory() {
   const online = connStatus === "open";
   $<HTMLButtonElement>("#undo").disabled = !online || !history.canUndo;
@@ -264,6 +466,10 @@ function capture(e: PointerEvent) {
 canvas.addEventListener("pointerdown", (e) => {
   if (!draws(e) || active || erasing || !pad.page) return;
   if (e.pointerType === "mouse" && e.button !== 0) return;
+  // Still writing: no auto-advance, and the strip must be still before mapping the pen.
+  clearAdvance();
+  strip?.penDown();
+  settle();
   const [x, y] = pad.toPage(e.clientX, e.clientY);
   if (tool === "eraser") {
     capture(e);
@@ -329,6 +535,8 @@ function finish(): void {
   saveOutbox();
   renderPending();
   pad.addStroke(stroke);
+  if (n) armAdvance(s.pts[(n - 1) * POINT_STRIDE]!);
+  applyRemoteMove();
 }
 
 /** Send whatever the server hasn't seen yet for the active stroke. */
@@ -420,6 +628,7 @@ function endErase(): void {
   flushErase();
   erasing = null;
   pad.drawEraser(null);
+  applyRemoteMove();
 }
 
 // ------------------------------------------------------------------ input: fingers
@@ -427,33 +636,78 @@ function endErase(): void {
 let lastPenAt = -Infinity;
 const penNear = () => active !== null || erasing !== null || performance.now() - lastPenAt < 500;
 
-const taps = new TapGestures((fingers) => (fingers === 2 ? undo() : fingers === 3 ? redo() : undefined), penNear);
+const gestures = new Gestures(
+  {
+    tap: (fingers) => (fingers === 2 ? undo() : fingers === 3 ? redo() : undefined),
+    pan: (dx, dy) => {
+      const s = stripOn();
+      if (!s) return;
+      if (anim) settle();
+      clearAdvance();
+      s.panBy(-dx / zoom(), -dy / zoom());
+      previewStrip();
+      publishViewport();
+    },
+    pinch: (factor, cx, cy) => {
+      const s = stripOn();
+      if (!s) return;
+      if (anim) settle();
+      clearAdvance();
+      // The page point under the fingers stays there. Use the strip's own rect, not the
+      // screen transform: that lags behind by up to a frame while previewing.
+      const ax = s.rect.x + (cx / innerWidth) * s.rect.w;
+      const ay = s.rect.y + (cy / innerHeight) * s.rect.h;
+      prefs.zoom = clamp(zoom() * factor, ...ZOOM_LIMITS);
+      const { w, h } = stripSize();
+      s.resize(w, h, { x: ax, y: ay });
+      previewStrip();
+      publishViewport();
+    },
+    end: () => {
+      saveJson(PREFS_KEY, prefs);
+      settle(); // sharp render now
+    },
+  },
+  penNear,
+);
 
 // Capture phase: see every pen event (incl. hover) before anything else.
 canvas.addEventListener(
   "pointermove",
   (e) => {
     if (e.pointerType === "pen") lastPenAt = performance.now();
-    else if (e.pointerType === "touch") taps.move(e);
+    else if (e.pointerType === "touch") gestures.move(e);
   },
   true,
 );
 canvas.addEventListener("pointerdown", (e) => {
-  if (e.pointerType === "pen") lastPenAt = performance.now();
-  if (e.pointerType === "touch") taps.down(e);
+  if (e.pointerType === "pen") {
+    lastPenAt = performance.now();
+    gestures.cancel();
+  }
+  if (e.pointerType === "touch") gestures.down(e);
 });
-canvas.addEventListener("pointerup", (e) => e.pointerType === "touch" && taps.up(e));
-canvas.addEventListener("pointercancel", (e) => e.pointerType === "touch" && taps.up(e, true));
+canvas.addEventListener("pointerup", (e) => e.pointerType === "touch" && gestures.up(e));
+canvas.addEventListener("pointercancel", (e) => e.pointerType === "touch" && gestures.up(e, true));
 
 // ------------------------------------------------------------------ screen
 
-window.addEventListener("resize", () => pad.resize());
+window.addEventListener("resize", () => {
+  pad.resize();
+  if (!strip) return;
+  const { w, h } = stripSize();
+  strip.resize(w, h);
+  showStrip(false);
+  publishViewport();
+});
 pad.resize();
 
-// No orientation lock yet: the whole A4 page is bigger in portrait. Strip mode (M3) locks landscape.
+// Strip mode wants landscape (long lines); the whole page is bigger in portrait.
 $("#fullscreen").addEventListener("click", async () => {
   try {
     await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+    const o = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+    if (prefs.mode === "strip") await o.lock?.("landscape");
   } catch {
     // not supported / denied — harmless
   }
@@ -480,5 +734,6 @@ document.addEventListener("visibilitychange", () => {
 void keepAwake();
 
 setTool("pen");
+setMode(prefs.mode === "tablet" ? "tablet" : "strip");
 renderHistory();
 if (!pad.desynchronized) console.warn("[pad] desynchronized canvas not available — ink latency will be higher");

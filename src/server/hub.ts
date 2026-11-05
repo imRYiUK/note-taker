@@ -8,6 +8,7 @@ import {
   type ClientMsg,
   type PadUrls,
   type ServerMsg,
+  type Viewport,
 } from "../shared/protocol.ts";
 import type { InkSettings } from "../shared/ink.ts";
 import { authorize } from "./net.ts";
@@ -46,6 +47,8 @@ export class Hub {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   readonly notebook: Notebook;
   ink: InkSettings;
+  /** Where the pad's strip is (memory only: the pad also remembers it). */
+  viewport: Viewport | null = null;
 
   constructor(private readonly opts: HubOptions) {
     this.notebook = opts.notebook;
@@ -124,6 +127,14 @@ export class Hub {
         if (change) this.applyChange(ws, change);
         break;
       }
+      case "viewport":
+        if (msg.pageId !== this.notebook.page.id) {
+          this.send(ws, { type: "error", code: "unknown_page", message: `no page ${msg.pageId}` });
+          break;
+        }
+        this.viewport = { pageId: msg.pageId, rect: msg.rect };
+        this.broadcast({ type: "viewport", ...this.viewport }, ws);
+        break;
       case "settings.set":
         this.ink = { ...this.ink, ...msg.ink };
         this.broadcast({ type: "settings", ink: this.ink });
@@ -147,7 +158,7 @@ export class Hub {
           this.send(ws, { type: "error", code: "unknown_page", message: `no page ${msg.pageId}` });
           // The pad is out of date — give it the current page; it drops the stroke from its outbox.
           this.send(ws, { type: "stroke.ack", id: msg.id });
-          this.send(ws, { type: "snapshot", ...nb.snapshot() });
+          this.send(ws, this.snapshot());
         }
         break;
       }
@@ -229,7 +240,7 @@ export class Hub {
       padUrls: this.opts.padUrls(),
     });
     this.send(ws, { type: "settings", ink: this.ink });
-    this.send(ws, { type: "snapshot", ...this.notebook.snapshot() });
+    this.send(ws, this.snapshot());
     this.send(ws, { type: "history", ...this.notebook.history() });
     if (msg.role === "viewer") {
       this.sendDevices(ws);
@@ -285,6 +296,11 @@ export class Hub {
     for (const ws of this.sockets) if (ws.data.info) ws.send(ping);
     // Viewers get a fresh client list (with RTTs) on the same cadence.
     if (this.sockets.size) this.broadcastClients();
+  }
+
+  private snapshot(): ServerMsg {
+    const vp = this.viewport?.pageId === this.notebook.page.id ? this.viewport : null;
+    return { type: "snapshot", ...this.notebook.snapshot(), viewport: vp };
   }
 
   private send(ws: Ws, msg: ServerMsg): void {

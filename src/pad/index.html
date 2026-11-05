@@ -88,6 +88,35 @@
         margin: 4px 2px;
         background: #3a3a40;
       }
+      #toolbar button#mode {
+        font-size: 13px;
+        min-width: 52px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      /* Left-edge handle (strip mode): touch it to jump to the next line. */
+      #margin {
+        position: fixed;
+        left: 0;
+        top: calc(max(6px, env(safe-area-inset-top)) + 48px);
+        bottom: 0;
+        width: 22px;
+        padding: 0;
+        border: 0;
+        border-radius: 0 10px 10px 0;
+        background: linear-gradient(90deg, rgba(47, 111, 222, 0.22), rgba(47, 111, 222, 0.06));
+        touch-action: none;
+      }
+      #margin::after {
+        content: "↵";
+        position: absolute;
+        left: 4px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: rgba(47, 111, 222, 0.7);
+        font-size: 14px;
+      }
       #fullscreen {
         position: fixed;
         bottom: max(8px, env(safe-area-inset-bottom));
@@ -106,7 +135,12 @@
       <span class="sep"></span>
       <button id="undo" type="button" title="Undo (two-finger tap)" disabled>↶</button>
       <button id="redo" type="button" title="Redo (three-finger tap)" disabled>↷</button>
+      <span class="sep"></span>
+      <button id="mode" type="button" title="Zoom strip / whole page">Strip</button>
+      <button id="back" type="button" title="Strip: one step back">←</button>
+      <button id="newline" type="button" title="Strip: next line (or tap the left edge)">↵</button>
     </div>
+    <button id="margin" type="button" aria-label="Next line" title="Next line"></button>
     <div id="status">
       <span class="dot warn"></span><span id="status-text">Connecting…</span><span id="status-detail"></span
       ><span id="status-pending"></span>

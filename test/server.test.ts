@@ -324,6 +324,35 @@ describe("server", () => {
     b.ws.close();
   });
 
+  test("strip viewport: relayed to others, kept for the next snapshot, cleared by tablet mode", async () => {
+    const pad = await client();
+    pad.send(hello("pad"));
+    const pageId = (await pad.expect("snapshot")).page.id;
+    const viewer = await client();
+    viewer.send(hello("viewer"));
+    await viewer.expect("snapshot");
+
+    const rect = { x: 210, y: 220, w: 515, h: 240 };
+    pad.send({ type: "viewport", pageId, rect });
+    expect(await viewer.expect("viewport")).toEqual({ type: "viewport", pageId, rect });
+
+    // Dragged on the PC → the pad hears about it.
+    const moved = { ...rect, x: 600 };
+    viewer.send({ type: "viewport", pageId, rect: moved });
+    expect((await pad.expect("viewport")).rect).toEqual(moved);
+
+    const late = await client();
+    late.send(hello("viewer"));
+    expect((await late.expect("snapshot")).viewport).toEqual({ pageId, rect: moved });
+
+    pad.send({ type: "viewport", pageId, rect: null });
+    expect((await viewer.expect("viewport")).rect).toBeNull();
+
+    pad.send({ type: "viewport", pageId: "old-page", rect });
+    expect((await pad.expect("error")).code).toBe("unknown_page");
+    for (const c of [pad, viewer, late]) c.ws.close();
+  });
+
   test("notes survive a server restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "note-taker-restart-"));
     try {

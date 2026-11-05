@@ -72,6 +72,28 @@
         height: 100%;
         display: block;
       }
+      /* The pad's zoom strip (overlay.ts). */
+      .page .strip {
+        position: absolute;
+        box-sizing: border-box;
+        border: 2px solid var(--accent);
+        border-radius: 4px;
+        background: color-mix(in srgb, var(--accent) 7%, transparent);
+        cursor: grab;
+        touch-action: none;
+        transition:
+          left 120ms ease-out,
+          top 120ms ease-out,
+          width 120ms ease-out,
+          height 120ms ease-out;
+      }
+      .page .strip.dragging,
+      .page .strip.streaming {
+        transition: none;
+      }
+      .page .strip.dragging {
+        cursor: grabbing;
+      }
       #panel {
         width: 400px;
         max-width: 100%;

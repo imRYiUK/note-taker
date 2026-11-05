@@ -365,11 +365,17 @@ Each milestone ends with a working, usable state. Estimates assume part-time wor
   both sides show identical pages.
 
 ### M3 — Zoom-strip mode (2 days) ← *the core feature*
-- [ ] `shared/strip.ts` state machine + unit tests (advance, wrap, cancel).
-- [ ] Pad renders the strip region magnified with template lines.
-- [ ] Auto-advance with animation; manual finger pan; "new line" button.
-- [ ] `viewport` messages; viewer draws the draggable strip rectangle; viewer drag moves strip.
-- [ ] Pinch to change magnification; settings persisted.
+- [x] `shared/strip.ts` state machine + unit tests (advance, wrap, cancel, back, clamp, resize).
+- [x] Pad renders the strip region magnified with ruled lines (`shared/templates.ts`: 8 mm rules,
+      30 mm top, 25 mm margin line — also drawn on the viewer); default zoom = 3 lines per screen height.
+- [x] Auto-advance with 120 ms animation; one-finger pan; "← back" / "↵ new line" buttons and the
+      left-edge margin handle. Toolbar toggles strip ↔ whole page (tablet) mode.
+- [x] `viewport` messages (protocol 4; included in `snapshot`); viewer draws the strip rectangle,
+      drag moves it, double-click the page jumps the strip there. Remote moves wait for pen-up.
+- [x] Pinch to change magnification (`gestures.ts`: tap / pan / pinch, palm-size filter); zoom, mode
+      and per-page strip position persisted in the pad's localStorage.
+- [ ] **On device:** write a full A4 page from the S23; tune delay / zone / step and the palm-size
+      threshold (`PALM_PX` = 60 CSS px) if a resting palm pans the strip.
 - **Done when:** you can write a full A4 page of normal-sized handwriting from the phone
   without ever manually moving the strip in normal use.
 

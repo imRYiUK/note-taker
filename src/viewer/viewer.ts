@@ -1,6 +1,7 @@
 import { Connection, type ConnStatus } from "../shared/connection.ts";
 import { DEFAULT_INK, applyPressureCurve, type InkSettings } from "../shared/ink.ts";
 import type { AdbDevice, ClientInfo, HistoryState, PadUrls, ServerMsg } from "../shared/protocol.ts";
+import { StripOverlay } from "./overlay.ts";
 import { PageView, type FitMode } from "./renderer.ts";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -23,6 +24,10 @@ let myId: string | null = null;
 let online = false;
 let history: HistoryState = { canUndo: false, canRedo: false };
 const view = new PageView($("#stage"));
+// Declared before `conn` like the rest; only used once messages arrive.
+const strip = new StripOverlay(view, (rect) => {
+  if (view.page) conn.send({ type: "viewport", pageId: view.page.id, rect });
+});
 
 // ------------------------------------------------------------------ connection
 
@@ -58,7 +63,11 @@ function handle(msg: ServerMsg) {
       break;
     case "snapshot":
       view.setSnapshot(msg.page, msg.strokes);
+      strip.set(msg.viewport?.rect ?? null);
       renderObserved();
+      break;
+    case "viewport":
+      if (msg.pageId === view.page?.id) strip.set(msg.rect);
       break;
     case "stroke.begin":
       view.liveBegin(msg);
