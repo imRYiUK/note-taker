@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>S Pen probe</title>
+    <link rel="stylesheet" href="../shared/base.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      #ink {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        touch-action: none;
+        display: block;
+      }
+      #panel {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        max-width: 460px;
+        background: color-mix(in srgb, var(--surface) 88%, transparent);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 13px;
+        pointer-events: auto;
+      }
+      #panel h1 {
+        font-size: 14px;
+        margin: 0 0 6px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      #checks {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 3px;
+      }
+      #checks li {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+      }
+      #checks .v {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11.5px;
+        margin-left: auto;
+        text-align: right;
+      }
+      .mark {
+        width: 1.1em;
+        flex: none;
+        color: var(--muted);
+      }
+      .pass .mark {
+        color: var(--ok);
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+      }
+      .actions button {
+        padding: 6px 10px;
+        font-size: 13px;
+      }
+      #result {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 6px;
+        min-height: 1.2em;
+      }
+      #panel.min #checks,
+      #panel.min #result {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="ink"></canvas>
+    <section id="panel">
+      <h1><span>S Pen probe</span><button id="toggle" type="button">–</button></h1>
+      <ul id="checks"></ul>
+      <div class="actions">
+        <button id="send" type="button">Send report to PC</button>
+        <button id="clear" type="button">Clear</button>
+        <a class="button" id="back" href="/pad">Pad</a>
+      </div>
+      <div id="result"></div>
+    </section>
+    <script type="module" src="./probe.ts"></script>
+  </body>
+</html>
